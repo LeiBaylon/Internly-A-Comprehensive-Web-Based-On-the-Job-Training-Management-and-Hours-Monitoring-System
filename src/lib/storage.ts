@@ -7,7 +7,20 @@ const KEYS = {
     DAILY_LOGS: 'internly_daily_logs',
     WEEKLY_REPORTS: 'internly_weekly_reports',
     REMEMBER_ME: 'internly_remember_me',
+    PENDING_SIGNUP: 'internly_pending_signup',
 };
+
+export interface PendingSignup {
+    name: string;
+    email: string;
+    password: string;
+    totalRequiredHours: number;
+    startDate: string;
+    verificationToken: string;
+    tokenExpiresAt: number;
+    googleUid?: string;
+    profileImage?: string;
+}
 
 function getItem<T>(key: string, fallback: T): T {
     if (typeof window === 'undefined') return fallback;
@@ -73,6 +86,96 @@ export function getCurrentUser(): User | null {
 
 export function getRememberedEmail(): string {
     return getItem<string>(KEYS.REMEMBER_ME, '');
+}
+
+export function findUserByEmail(email: string): User | null {
+    const users = getItem<User[]>(KEYS.USERS, []);
+    return users.find((u) => u.email === email) || null;
+}
+
+export function storePendingSignup(data: PendingSignup): void {
+    setItem(KEYS.PENDING_SIGNUP, data);
+}
+
+export function getPendingSignup(): PendingSignup | null {
+    return getItem<PendingSignup | null>(KEYS.PENDING_SIGNUP, null);
+}
+
+export function clearPendingSignup(): void {
+    if (typeof window !== 'undefined') localStorage.removeItem(KEYS.PENDING_SIGNUP);
+}
+
+export function completeSignUp(pending: PendingSignup, firebaseUid: string): User {
+    const users = getItem<User[]>(KEYS.USERS, []);
+    const existing = users.find((u) => u.email === pending.email);
+    if (existing) {
+        setItem(KEYS.CURRENT_USER, existing);
+        return existing;
+    }
+    const user: User = {
+        id: firebaseUid,
+        name: pending.name,
+        email: pending.email,
+        password: pending.password,
+        totalRequiredHours: pending.totalRequiredHours,
+        startDate: pending.startDate,
+        createdAt: new Date().toISOString(),
+        supervisors: [],
+        reminderEnabled: true,
+        profileImage: pending.profileImage,
+    };
+    users.push(user);
+    setItem(KEYS.USERS, users);
+    setItem(KEYS.CURRENT_USER, user);
+    return user;
+}
+
+export function loginByEmail(email: string, rememberMe: boolean): User {
+    const users = getItem<User[]>(KEYS.USERS, []);
+    const user = users.find((u) => u.email === email);
+    if (!user) throw new Error('User not found. Please sign up first.');
+    setItem(KEYS.CURRENT_USER, user);
+    if (rememberMe) setItem(KEYS.REMEMBER_ME, email);
+    else localStorage.removeItem(KEYS.REMEMBER_ME);
+    return user;
+}
+
+export function googleSignIn(
+    name: string,
+    email: string,
+    profileImage?: string,
+    googleId?: string
+): User {
+    const users = getItem<User[]>(KEYS.USERS, []);
+    const existing = users.find((u) => u.email === email);
+    if (existing) {
+        // Update profile image if provided
+        if (profileImage && !existing.profileImage) {
+            existing.profileImage = profileImage;
+            const idx = users.findIndex((u) => u.id === existing.id);
+            users[idx] = existing;
+            setItem(KEYS.USERS, users);
+        }
+        setItem(KEYS.CURRENT_USER, existing);
+        return existing;
+    }
+    // Create new user from Google profile
+    const user: User = {
+        id: googleId || uuidv4(),
+        name,
+        email,
+        password: '',
+        totalRequiredHours: 480,
+        startDate: new Date().toISOString().split('T')[0],
+        createdAt: new Date().toISOString(),
+        supervisors: [],
+        reminderEnabled: true,
+        profileImage,
+    };
+    users.push(user);
+    setItem(KEYS.USERS, users);
+    setItem(KEYS.CURRENT_USER, user);
+    return user;
 }
 
 export function updateUser(updates: Partial<User>): User {

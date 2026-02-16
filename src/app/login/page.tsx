@@ -6,7 +6,7 @@ import { getRememberedEmail } from '@/lib/storage';
 import { ArrowLeft, Eye, EyeOff, LogIn } from 'lucide-react';
 
 export default function LoginPage() {
-    const { login, user, loading } = useApp();
+    const { login, user, loading, loginWithGoogle } = useApp();
     const router = useRouter();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -14,6 +14,7 @@ export default function LoginPage() {
     const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState('');
     const [submitting, setSubmitting] = useState(false);
+    const [googleLoading, setGoogleLoading] = useState(false);
 
     useEffect(() => {
         if (!loading && user) router.push('/dashboard');
@@ -32,10 +33,19 @@ export default function LoginPage() {
         setError('');
         setSubmitting(true);
         try {
-            login(email, password, rememberMe);
+            await login(email, password, rememberMe);
             router.push('/dashboard');
         } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : 'Login failed');
+            const firebaseErr = err as { code?: string; message?: string };
+            if (firebaseErr.code === 'auth/wrong-password' || firebaseErr.code === 'auth/invalid-credential') {
+                setError('Invalid email or password.');
+            } else if (firebaseErr.code === 'auth/user-not-found') {
+                setError('No account found with this email.');
+            } else if (firebaseErr.code === 'auth/too-many-requests') {
+                setError('Too many attempts. Please try again later.');
+            } else {
+                setError(firebaseErr.message || 'Login failed');
+            }
         }
         setSubmitting(false);
     };
@@ -170,6 +180,20 @@ export default function LoginPage() {
                                 />
                                 Remember me
                             </label>
+                            <button
+                                type="button"
+                                onClick={() => router.push('/forgot-password')}
+                                style={{
+                                    color: 'var(--primary-400)',
+                                    fontWeight: 600,
+                                    background: 'none',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    fontSize: 13,
+                                }}
+                            >
+                                Forgot password?
+                            </button>
                         </div>
 
                         <button
@@ -200,7 +224,72 @@ export default function LoginPage() {
                         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
                     </form>
 
-                    <div className="divider" style={{ margin: '24px 0' }} />
+                    <div className="divider" style={{ margin: '24px 0', display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <span style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
+                        <span style={{ fontSize: 12, color: 'var(--slate-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>or</span>
+                        <span style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={async () => {
+                            setGoogleLoading(true);
+                            setError('');
+                            try {
+                                await loginWithGoogle();
+                                router.push('/dashboard');
+                            } catch (err: unknown) {
+                                setError(err instanceof Error ? err.message : 'Google sign-in failed. Please try again.');
+                                setGoogleLoading(false);
+                            }
+                        }}
+                        disabled={googleLoading}
+                        style={{
+                            width: '100%',
+                            padding: '12px 24px',
+                            borderRadius: 'var(--radius-sm)',
+                            border: '1px solid rgba(255,255,255,0.12)',
+                            background: 'rgba(255,255,255,0.04)',
+                            color: 'white',
+                            fontSize: 14,
+                            fontWeight: 600,
+                            cursor: googleLoading ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 10,
+                            transition: 'all 150ms',
+                            opacity: googleLoading ? 0.6 : 1,
+                        }}
+                        onMouseEnter={(e) => { if (!googleLoading) e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+                    >
+                        {googleLoading ? (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{
+                                    width: 18,
+                                    height: 18,
+                                    border: '2px solid rgba(255,255,255,0.3)',
+                                    borderTopColor: 'white',
+                                    borderRadius: '50%',
+                                    animation: 'spin 0.8s linear infinite',
+                                }} />
+                                Redirecting...
+                            </span>
+                        ) : (
+                            <>
+                                <svg width="18" height="18" viewBox="0 0 48 48">
+                                    <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
+                                    <path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
+                                    <path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/>
+                                    <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/>
+                                </svg>
+                                Continue with Google
+                            </>
+                        )}
+                    </button>
+
+                    <div style={{ height: 24 }} />
 
                     <p style={{ textAlign: 'center', fontSize: 14, color: 'var(--slate-400)' }}>
                         Don&apos;t have an account?{' '}
