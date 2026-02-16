@@ -1,0 +1,78 @@
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  password: string;
+  totalRequiredHours: number;
+  startDate: string;
+  endDate?: string;
+  createdAt: string;
+  supervisors: string[];
+  reminderEnabled: boolean;
+  profileImage?: string;
+}
+
+export interface DailyLog {
+  id: string;
+  userId: string;
+  entryDate: string;
+  activityType: ActivityType[];
+  taskDescription: string;
+  supervisor: string;
+  dailyHours: number;
+  attachments?: Attachment[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WeeklyReport {
+  id: string;
+  userId: string;
+  weekStart: string;
+  weekEnd: string;
+  reflection: string;
+  logs: DailyLog[];
+  createdAt: string;
+}
+
+export interface Attachment {
+  id: string;
+  name: string;
+  url: string;
+  type: string;
+}
+
+export type ActivityType =
+  | 'Technical'
+  | 'Administrative'
+  | 'Meeting'
+  | 'Field Work'
+  | 'Coding'
+  | 'Documentation'
+  | 'Research'
+  | 'Training'
+  | 'Presentation'
+  | 'Other';
+
+export const ACTIVITY_TYPES: ActivityType[] = [
+  'Technical',
+  'Administrative',
+  'Meeting',
+  'Field Work',
+  'Coding',
+  'Documentation',
+  'Research',
+  'Training',
+  'Presentation',
+  'Other',
+];
+
+export interface HourStats {
+  totalRequired: number;
+  totalRendered: number;
+  hoursThisWeek: number;
+  remaining: number;
+  progressPercentage: number;
+  weeklyAverage: number;
+  daysLogged: number;
+}
