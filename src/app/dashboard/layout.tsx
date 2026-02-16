@@ -17,6 +17,7 @@ import {
     ClipboardList,
     BarChart3,
     Clock,
+    MessageCircle,
 } from 'lucide-react';
 
 const navItems = [
@@ -24,14 +25,15 @@ const navItems = [
     { href: '/dashboard/log', label: 'Log Today\'s Work', icon: Plus },
     { href: '/dashboard/reports', label: 'Weekly Reports', icon: FileText },
     { href: '/dashboard/history', label: 'Logs History', icon: History },
+    { href: '/dashboard/chat', label: 'Messages', icon: MessageCircle },
     { href: '/dashboard/settings', label: 'Settings', icon: Settings },
 ];
 
 const mobileNavItems = [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/dashboard/log', label: 'Logs', icon: ClipboardList },
+    { href: '/dashboard/chat', label: 'Chat', icon: MessageCircle },
     { href: '/dashboard/reports', label: 'Reports', icon: BarChart3 },
-    { href: '/dashboard/history', label: 'History', icon: Clock },
     { href: '/dashboard/settings', label: 'Settings', icon: Settings },
 ];
 
