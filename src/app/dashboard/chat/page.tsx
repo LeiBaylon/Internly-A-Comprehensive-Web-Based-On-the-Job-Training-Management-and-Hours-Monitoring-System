@@ -656,7 +656,8 @@ export default function ChatPage() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const messageInputRef = useRef<HTMLInputElement>(null);
 
-    const currentUserId = user?.id || '';
+    // Always use Firebase Auth UID for chat operations to match Firestore rules
+    const currentUserId = firebaseUser?.uid || user?.id || '';
 
     // Wait for Firebase Auth to restore session before making Firestore calls
     useEffect(() => {
@@ -713,15 +714,15 @@ export default function ChatPage() {
     // Register current user in Firestore on mount (only after Firebase Auth is ready)
     useEffect(() => {
         if (!user || !firebaseUser) return;
+        const fbUid = firebaseUser.uid;
         const chatUser: ChatUser = {
-            uid: user.id,
+            uid: fbUid,
             name: user.name,
             email: user.email,
             profileImage: user.profileImage,
         };
         upsertChatUser(chatUser).catch(err => {
             console.error('Failed to register chat user (will retry):', err);
-            // Retry once after a short delay
             setTimeout(() => {
                 upsertChatUser(chatUser).catch(err2 => {
                     console.error('Retry also failed:', err2);
@@ -731,7 +732,7 @@ export default function ChatPage() {
 
         // Set offline on unmount
         return () => {
-            setUserOnlineStatus(user.id, false).catch(() => {});
+            setUserOnlineStatus(fbUid, false).catch(() => {});
         };
     }, [user, firebaseUser]);
 
