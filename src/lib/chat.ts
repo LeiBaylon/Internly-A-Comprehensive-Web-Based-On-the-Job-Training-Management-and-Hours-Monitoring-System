@@ -37,6 +37,10 @@ export interface Message {
     senderId: string;
     text?: string;
     imageUrl?: string;
+    fileUrl?: string;
+    fileName?: string;
+    fileSize?: number;
+    fileType?: string;
     timestamp: Timestamp;
     read: boolean;
     status?: 'sent' | 'delivered' | 'seen';
@@ -226,6 +230,7 @@ export async function sendMessage(
     otherUserIds: string | string[],
     text?: string,
     imageUrl?: string,
+    fileData?: { fileUrl: string; fileName: string; fileSize: number; fileType: string },
 ): Promise<void> {
     // Use Firebase Auth UID to ensure Firestore rules pass
     const effectiveSenderId = auth.currentUser?.uid || senderId;
@@ -235,6 +240,10 @@ export async function sendMessage(
         senderId: effectiveSenderId,
         text: text || null,
         imageUrl: imageUrl || null,
+        fileUrl: fileData?.fileUrl || null,
+        fileName: fileData?.fileName || null,
+        fileSize: fileData?.fileSize || null,
+        fileType: fileData?.fileType || null,
         timestamp: serverTimestamp(),
         read: false,
         status: 'sent',
@@ -249,8 +258,13 @@ export async function sendMessage(
         for (const id of ids) {
             unreadUpdates[`unreadCount.${id}`] = increment(1);
         }
+
+        let lastMessage = text || '';
+        if (imageUrl) lastMessage = '📷 Image';
+        if (fileData) lastMessage = `📎 ${fileData.fileName}`;
+
         await updateDoc(doc(db, 'conversations', conversationId), {
-            lastMessage: imageUrl ? '📷 Image' : (text || ''),
+            lastMessage,
             lastMessageTime: serverTimestamp(),
             lastMessageSenderId: effectiveSenderId,
             ...unreadUpdates,
@@ -419,25 +433,71 @@ export async function setNickname(
     }
 }
 
-// ─── Image Upload (ImgBB - free) ────────────────────────
+// ─── File Upload (Cloudinary - free) ────────────────────
+
+export async function uploadChatFile(
+    file: File,
+): Promise<{ url: string; name: string; size: number; type: string }> {
+    const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+    const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
+
+    if (!cloudName || !uploadPreset) {
+        throw new Error(
+            'File uploads not configured. Add NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET to .env.local',
+        );
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('upload_preset', uploadPreset);
+
+    const response = await fetch(
+        `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
+        { method: 'POST', body: formData },
+    );
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: { message: 'Upload failed' } }));
+        throw new Error(err.error?.message || 'File upload failed');
+    }
+
+    const data = await response.json();
+
+    return {
+        url: data.secure_url,
+        name: file.name,
+        size: file.size,
+        type: file.type || 'application/octet-stream',
+    };
+}
+
+// ─── Image Upload (Cloudinary - free) ───────────────────
 
 export async function uploadChatImage(
     _conversationId: string,
     file: File | Blob,
 ): Promise<string> {
-    const formData = new FormData();
-    formData.append('image', file, file instanceof File ? file.name : `image_${Date.now()}.jpg`);
+    const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+    const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
 
-    const response = await fetch('/api/upload-image', {
-        method: 'POST',
-        body: formData,
-    });
+    if (!cloudName || !uploadPreset) {
+        throw new Error('Image uploads not configured. Add Cloudinary env vars to .env.local');
+    }
+
+    const formData = new FormData();
+    formData.append('file', file, file instanceof File ? file.name : `image_${Date.now()}.jpg`);
+    formData.append('upload_preset', uploadPreset);
+
+    const response = await fetch(
+        `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+        { method: 'POST', body: formData },
+    );
 
     if (!response.ok) {
-        const err = await response.json().catch(() => ({ error: 'Upload failed' }));
-        throw new Error(err.error || 'Image upload failed');
+        const err = await response.json().catch(() => ({ error: { message: 'Upload failed' } }));
+        throw new Error(err.error?.message || 'Image upload failed');
     }
 
     const data = await response.json();
-    return data.url;
+    return data.secure_url;
 }

@@ -18,6 +18,7 @@ import {
     markConversationRead,
     markMessagesAsSeen,
     uploadChatImage,
+    uploadChatFile,
     setUserOnlineStatus,
     setNickname,
     setTypingStatus,
@@ -56,6 +57,9 @@ import {
     FileText,
     ExternalLink,
     Grid3X3,
+    MoreVertical,
+    Paperclip,
+    Download,
 } from 'lucide-react';
 import Cropper from 'react-easy-crop';
 import type { Area } from 'react-easy-crop';
@@ -653,6 +657,7 @@ export default function ChatPage() {
     const [uploading, setUploading] = useState(false);
     const [sending, setSending] = useState(false);
     const [pendingImages, setPendingImages] = useState<{ file: File | Blob; preview: string }[]>([]);
+    const [pendingFile, setPendingFile] = useState<{ file: File; name: string; size: number; type: string } | null>(null);
     const [editingImageIndex, setEditingImageIndex] = useState<number | null>(null);
     // Group chat creation state
     const [showGroupCreate, setShowGroupCreate] = useState(false);
@@ -670,6 +675,8 @@ export default function ChatPage() {
     const [showMediaGallery, setShowMediaGallery] = useState(false);
     const [mediaTab, setMediaTab] = useState<'images' | 'files' | 'links'>('images');
     const [isFullscreen, setIsFullscreen] = useState(false);
+    const [showChatMenu, setShowChatMenu] = useState(false);
+    const chatMenuRef = React.useRef<HTMLDivElement>(null);
 
     // ESC key to exit fullscreen
     useEffect(() => {
@@ -681,8 +688,21 @@ export default function ChatPage() {
         return () => window.removeEventListener('keydown', handleEsc);
     }, [isFullscreen]);
 
+    // Click-outside to close chat menu
+    useEffect(() => {
+        if (!showChatMenu) return;
+        const handleClick = (e: MouseEvent) => {
+            if (chatMenuRef.current && !chatMenuRef.current.contains(e.target as Node)) {
+                setShowChatMenu(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClick);
+        return () => document.removeEventListener('mousedown', handleClick);
+    }, [showChatMenu]);
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const attachFileInputRef = useRef<HTMLInputElement>(null);
     const messageInputRef = useRef<HTMLInputElement>(null);
     const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const isTypingRef = useRef(false);
@@ -920,14 +940,25 @@ export default function ChatPage() {
     }, [messages, activeConversation]);
 
     const galleryFiles = React.useMemo(() => {
-        // Future: when file uploads (PDF, docs) are supported, extract them here
-        // For now, return empty array
-        return [] as { id: string; name: string; url: string; type: string; senderId: string; senderName: string; timestamp: Message['timestamp'] }[];
-    }, []);
+        return messages
+            .filter(m => m.fileUrl && m.fileName)
+            .map(m => ({
+                id: m.id,
+                name: m.fileName!,
+                url: m.fileUrl!,
+                type: m.fileType || 'file',
+                size: m.fileSize || 0,
+                senderId: m.senderId,
+                senderName: activeConversation?.participantDetails?.[m.senderId]?.name || 'Unknown',
+                timestamp: m.timestamp,
+            }))
+            .reverse(); // newest first
+    }, [messages, activeConversation]);
 
-    // Close media gallery when switching conversations
+    // Close media gallery & chat menu when switching conversations
     useEffect(() => {
         setShowMediaGallery(false);
+        setShowChatMenu(false);
     }, [activeConversationId]);
 
     // Focus input when conversation opens & clear pending image
@@ -1033,7 +1064,8 @@ export default function ChatPage() {
     const handleSendMessage = async () => {
         const hasText = messageText.trim().length > 0;
         const hasImages = pendingImages.length > 0;
-        if ((!hasText && !hasImages) || !activeConversationId || !activeConversation) return;
+        const hasFile = pendingFile !== null;
+        if ((!hasText && !hasImages && !hasFile) || !activeConversationId || !activeConversation) return;
         const text = messageText.trim();
         setMessageText('');
         setSending(true);
@@ -1048,7 +1080,19 @@ export default function ChatPage() {
         try {
             const otherIds = activeConversation.participants.filter(p => p !== currentUserId);
 
-            if (hasImages) {
+            if (hasFile) {
+                setUploading(true);
+                const result = await uploadChatFile(pendingFile!.file);
+                setUploading(false);
+                setPendingFile(null);
+
+                await sendMessage(activeConversationId, currentUserId, otherIds, text || undefined, undefined, {
+                    fileUrl: result.url,
+                    fileName: result.name,
+                    fileSize: result.size,
+                    fileType: result.type,
+                });
+            } else if (hasImages) {
                 setUploading(true);
                 // Upload all images
                 const imageUrls: string[] = [];
@@ -1097,9 +1141,47 @@ export default function ChatPage() {
 
         if (newImages.length > 0) {
             setPendingImages(prev => [...prev, ...newImages]);
+            setPendingFile(null); // clear any pending file when adding images
         }
         if (fileInputRef.current) fileInputRef.current.value = '';
         messageInputRef.current?.focus();
+    };
+
+    const handleFileAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !activeConversationId || !activeConversation) return;
+
+        if (file.type.startsWith('image/')) {
+            // Redirect images to the image handler
+            const preview = URL.createObjectURL(file);
+            setPendingImages(prev => [...prev, { file, preview }]);
+            setPendingFile(null);
+            if (attachFileInputRef.current) attachFileInputRef.current.value = '';
+            messageInputRef.current?.focus();
+            return;
+        }
+
+        if (file.size > 10 * 1024 * 1024) {
+            alert(`"${file.name}" exceeds 10 MB. Please choose a smaller file.`);
+            if (attachFileInputRef.current) attachFileInputRef.current.value = '';
+            return;
+        }
+
+        setPendingFile({ file, name: file.name, size: file.size, type: file.type || 'application/octet-stream' });
+        clearAllPendingImages(); // clear images when attaching a file
+        if (attachFileInputRef.current) attachFileInputRef.current.value = '';
+        messageInputRef.current?.focus();
+    };
+
+    const formatFileSize = (bytes: number): string => {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    };
+
+    const getFileExtension = (name: string): string => {
+        const ext = name.split('.').pop()?.toUpperCase() || '';
+        return ext;
     };
 
     const handleViewProfile = async (uid: string) => {
@@ -2102,50 +2184,6 @@ export default function ChatPage() {
                                                     {display.memberCount} members
                                                 </p>
                                             </div>
-                                            <button
-                                                onClick={() => openNicknameModal('')}
-                                                title="Set nicknames"
-                                                style={{
-                                                    width: 34,
-                                                    height: 34,
-                                                    borderRadius: 8,
-                                                    background: 'rgba(255,255,255,0.04)',
-                                                    border: '1px solid rgba(255,255,255,0.08)',
-                                                    color: 'var(--slate-400)',
-                                                    cursor: 'pointer',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    justifyContent: 'center',
-                                                    flexShrink: 0,
-                                                    transition: 'all 150ms',
-                                                }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
-                                            >
-                                                <Pencil size={14} />
-                                            </button>
-                                            <button
-                                                onClick={() => setShowMembersModal(true)}
-                                                title="Manage members"
-                                                style={{
-                                                    width: 34,
-                                                    height: 34,
-                                                    borderRadius: 8,
-                                                    background: 'rgba(255,255,255,0.04)',
-                                                    border: '1px solid rgba(255,255,255,0.08)',
-                                                    color: 'var(--slate-400)',
-                                                    cursor: 'pointer',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    justifyContent: 'center',
-                                                    flexShrink: 0,
-                                                    transition: 'all 150ms',
-                                                }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
-                                            >
-                                                <Users size={14} />
-                                            </button>
                                         </>
                                     );
                                 }
@@ -2226,78 +2264,150 @@ export default function ChatPage() {
                                                 Tap to view profile
                                             </p>
                                         </button>
-                                        <button
-                                            onClick={() => openNicknameModal(otherId)}
-                                            title="Set nickname"
-                                            style={{
-                                                width: 34,
-                                                height: 34,
-                                                borderRadius: 8,
-                                                background: 'rgba(255,255,255,0.04)',
-                                                border: '1px solid rgba(255,255,255,0.08)',
-                                                color: 'var(--slate-400)',
-                                                cursor: 'pointer',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                flexShrink: 0,
-                                                transition: 'all 150ms',
-                                            }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
-                                        >
-                                            <Pencil size={14} />
-                                        </button>
                                     </>
                                 );
                             })()}
-                            {/* Fullscreen toggle */}
-                            <button
-                                onClick={() => { setShowMediaGallery(g => !g); setMediaTab('images'); }}
-                                title="Media gallery"
-                                style={{
-                                    width: 34,
-                                    height: 34,
-                                    borderRadius: 8,
-                                    background: showMediaGallery ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
-                                    border: `1px solid ${showMediaGallery ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.08)'}`,
-                                    color: showMediaGallery ? 'var(--primary-400)' : 'var(--slate-400)',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    flexShrink: 0,
-                                    transition: 'all 150ms',
-                                    marginLeft: 4,
-                                }}
-                                onMouseEnter={(e) => { if (!showMediaGallery) { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; } }}
-                                onMouseLeave={(e) => { if (!showMediaGallery) { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; } }}
-                            >
-                                <Grid3X3 size={14} />
-                            </button>
-                            <button
-                                onClick={() => setIsFullscreen(f => !f)}
-                                title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-                                style={{
-                                    width: 34,
-                                    height: 34,
-                                    borderRadius: 8,
-                                    background: 'rgba(255,255,255,0.04)',
-                                    border: '1px solid rgba(255,255,255,0.08)',
-                                    color: 'var(--slate-400)',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    flexShrink: 0,
-                                    transition: 'all 150ms',
-                                    marginLeft: 4,
-                                }}
-                                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; }}
-                                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
-                            >
-                                {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-                            </button>
+                            {/* Chat menu dropdown */}
+                            <div ref={chatMenuRef} style={{ position: 'relative', flexShrink: 0 }}>
+                                <button
+                                    onClick={() => setShowChatMenu(m => !m)}
+                                    title="Chat options"
+                                    style={{
+                                        width: 34,
+                                        height: 34,
+                                        borderRadius: 8,
+                                        background: showChatMenu ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
+                                        border: `1px solid ${showChatMenu ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.08)'}`,
+                                        color: showChatMenu ? 'var(--primary-400)' : 'var(--slate-400)',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        flexShrink: 0,
+                                        transition: 'all 150ms',
+                                        marginLeft: 4,
+                                    }}
+                                    onMouseEnter={(e) => { if (!showChatMenu) { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; } }}
+                                    onMouseLeave={(e) => { if (!showChatMenu) { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; } }}
+                                >
+                                    <MoreVertical size={16} />
+                                </button>
+                                {showChatMenu && (
+                                    <div style={{
+                                        position: 'absolute',
+                                        top: 'calc(100% + 6px)',
+                                        right: 0,
+                                        background: 'var(--slate-800, #1e293b)',
+                                        border: '1px solid rgba(255,255,255,0.1)',
+                                        borderRadius: 12,
+                                        padding: '6px 0',
+                                        minWidth: 180,
+                                        boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+                                        zIndex: 100,
+                                    }}>
+                                        {/* Nicknames */}
+                                        <button
+                                            onClick={() => {
+                                                setShowChatMenu(false);
+                                                if (activeConversation?.isGroup) {
+                                                    openNicknameModal('');
+                                                } else {
+                                                    const otherId = activeConversation?.participants.find(p => p !== currentUserId) || '';
+                                                    openNicknameModal(otherId);
+                                                }
+                                            }}
+                                            style={{
+                                                width: '100%',
+                                                padding: '10px 16px',
+                                                background: 'none',
+                                                border: 'none',
+                                                color: 'var(--slate-300)',
+                                                fontSize: 13,
+                                                cursor: 'pointer',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 10,
+                                                transition: 'background 150ms',
+                                            }}
+                                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+                                        >
+                                            <Pencil size={15} style={{ opacity: 0.7 }} />
+                                            Nicknames
+                                        </button>
+                                        {/* Members (group only) */}
+                                        {activeConversation?.isGroup && (
+                                            <button
+                                                onClick={() => { setShowChatMenu(false); setShowMembersModal(true); }}
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '10px 16px',
+                                                    background: 'none',
+                                                    border: 'none',
+                                                    color: 'var(--slate-300)',
+                                                    fontSize: 13,
+                                                    cursor: 'pointer',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: 10,
+                                                    transition: 'background 150ms',
+                                                }}
+                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+                                            >
+                                                <Users size={15} style={{ opacity: 0.7 }} />
+                                                Members
+                                            </button>
+                                        )}
+                                        {/* Media gallery */}
+                                        <button
+                                            onClick={() => { setShowChatMenu(false); setShowMediaGallery(g => !g); setMediaTab('images'); }}
+                                            style={{
+                                                width: '100%',
+                                                padding: '10px 16px',
+                                                background: 'none',
+                                                border: 'none',
+                                                color: showMediaGallery ? 'var(--primary-400)' : 'var(--slate-300)',
+                                                fontSize: 13,
+                                                cursor: 'pointer',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 10,
+                                                transition: 'background 150ms',
+                                            }}
+                                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+                                        >
+                                            <Grid3X3 size={15} style={{ opacity: 0.7 }} />
+                                            Media
+                                        </button>
+                                        {/* Divider */}
+                                        <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '4px 0' }} />
+                                        {/* Fullscreen */}
+                                        <button
+                                            onClick={() => { setShowChatMenu(false); setIsFullscreen(f => !f); }}
+                                            style={{
+                                                width: '100%',
+                                                padding: '10px 16px',
+                                                background: 'none',
+                                                border: 'none',
+                                                color: 'var(--slate-300)',
+                                                fontSize: 13,
+                                                cursor: 'pointer',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 10,
+                                                transition: 'background 150ms',
+                                            }}
+                                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+                                        >
+                                            {isFullscreen ? <Minimize2 size={15} style={{ opacity: 0.7 }} /> : <Maximize2 size={15} style={{ opacity: 0.7 }} />}
+                                            {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
                         </div>
 
                         {/* Messages area */}
@@ -2417,6 +2527,68 @@ export default function ChatPage() {
                                                         }}
                                                     />
                                                 </div>
+                                            )}
+
+                                            {/* File message */}
+                                            {msg.fileUrl && msg.fileName && (
+                                                <a
+                                                    href={msg.fileUrl}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    style={{
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: 10,
+                                                        padding: '10px 14px',
+                                                        borderRadius: 14,
+                                                        background: isMine
+                                                            ? 'rgba(255,255,255,0.12)'
+                                                            : 'rgba(255,255,255,0.06)',
+                                                        border: `1px solid ${isMine ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.08)'}`,
+                                                        textDecoration: 'none',
+                                                        marginBottom: msg.text ? 4 : 0,
+                                                        maxWidth: 260,
+                                                        cursor: 'pointer',
+                                                        transition: 'all 150ms',
+                                                    }}
+                                                    onMouseEnter={(e) => { e.currentTarget.style.background = isMine ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.1)'; }}
+                                                    onMouseLeave={(e) => { e.currentTarget.style.background = isMine ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.06)'; }}
+                                                >
+                                                    <div style={{
+                                                        width: 36,
+                                                        height: 36,
+                                                        borderRadius: 8,
+                                                        background: isMine ? 'rgba(255,255,255,0.15)' : 'rgba(99,102,241,0.15)',
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        justifyContent: 'center',
+                                                        flexShrink: 0,
+                                                    }}>
+                                                        <FileText size={18} style={{ color: isMine ? 'white' : 'var(--primary-400)' }} />
+                                                    </div>
+                                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                                        <p style={{
+                                                            fontSize: 12,
+                                                            fontWeight: 600,
+                                                            color: 'white',
+                                                            margin: 0,
+                                                            overflow: 'hidden',
+                                                            textOverflow: 'ellipsis',
+                                                            whiteSpace: 'nowrap',
+                                                        }}>
+                                                            {msg.fileName}
+                                                        </p>
+                                                        <p style={{
+                                                            fontSize: 10,
+                                                            color: isMine ? 'rgba(255,255,255,0.6)' : 'var(--slate-500)',
+                                                            margin: 0,
+                                                            marginTop: 1,
+                                                        }}>
+                                                            {msg.fileSize ? formatFileSize(msg.fileSize) : ''}{msg.fileType ? ` · ${getFileExtension(msg.fileName!)}` : ''}
+                                                        </p>
+                                                    </div>
+                                                    <Download size={14} style={{ color: isMine ? 'rgba(255,255,255,0.6)' : 'var(--slate-500)', flexShrink: 0 }} />
+                                                </a>
                                             )}
 
                                             {/* Text message */}
@@ -2652,10 +2824,84 @@ export default function ChatPage() {
                             </div>
                         )}
 
+                        {/* Pending file preview */}
+                        {pendingFile && (
+                            <div style={{
+                                padding: '10px 16px 4px',
+                                borderTop: '1px solid rgba(255,255,255,0.06)',
+                                background: 'var(--slate-950)',
+                                flexShrink: 0,
+                            }}>
+                                <div style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 10,
+                                    padding: '10px 12px',
+                                    borderRadius: 10,
+                                    background: 'rgba(99,102,241,0.08)',
+                                    border: '1px solid rgba(99,102,241,0.2)',
+                                }}>
+                                    <div style={{
+                                        width: 36,
+                                        height: 36,
+                                        borderRadius: 8,
+                                        background: 'rgba(99,102,241,0.15)',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        flexShrink: 0,
+                                    }}>
+                                        <FileText size={18} style={{ color: 'var(--primary-400)' }} />
+                                    </div>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <p style={{
+                                            fontSize: 12,
+                                            fontWeight: 600,
+                                            color: 'white',
+                                            margin: 0,
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                            whiteSpace: 'nowrap',
+                                        }}>
+                                            {pendingFile.name}
+                                        </p>
+                                        <p style={{ fontSize: 10, color: 'var(--slate-500)', margin: 0, marginTop: 1 }}>
+                                            {formatFileSize(pendingFile.size)} · {getFileExtension(pendingFile.name)}
+                                        </p>
+                                    </div>
+                                    <button
+                                        onClick={() => setPendingFile(null)}
+                                        style={{
+                                            width: 24,
+                                            height: 24,
+                                            borderRadius: '50%',
+                                            background: 'rgba(239,68,68,0.15)',
+                                            border: 'none',
+                                            color: '#f87171',
+                                            cursor: 'pointer',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            flexShrink: 0,
+                                            transition: 'all 150ms',
+                                        }}
+                                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.3)'; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.15)'; }}
+                                        title="Remove file"
+                                    >
+                                        <X size={12} />
+                                    </button>
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--slate-500)', marginTop: 6 }}>
+                                    File attached — press Send when ready
+                                </div>
+                            </div>
+                        )}
+
                         {/* Message input */}
                         <div style={{
                             padding: '12px 16px',
-                            borderTop: pendingImages.length > 0 ? 'none' : '1px solid rgba(255,255,255,0.06)',
+                            borderTop: (pendingImages.length > 0 || pendingFile) ? 'none' : '1px solid rgba(255,255,255,0.06)',
                             display: 'flex',
                             alignItems: 'center',
                             gap: 8,
@@ -2670,6 +2916,35 @@ export default function ChatPage() {
                                 onChange={handleImageUpload}
                                 style={{ display: 'none' }}
                             />
+                            <input
+                                type="file"
+                                ref={attachFileInputRef}
+                                onChange={handleFileAttach}
+                                style={{ display: 'none' }}
+                            />
+                            <button
+                                onClick={() => attachFileInputRef.current?.click()}
+                                disabled={uploading}
+                                title="Attach file"
+                                style={{
+                                    width: 40,
+                                    height: 40,
+                                    borderRadius: 10,
+                                    border: `1px solid ${pendingFile ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.08)'}`,
+                                    background: pendingFile ? 'rgba(99,102,241,0.12)' : 'rgba(255,255,255,0.04)',
+                                    color: pendingFile ? 'var(--primary-400)' : (uploading ? 'var(--primary-400)' : 'var(--slate-400)'),
+                                    cursor: uploading ? 'not-allowed' : 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    flexShrink: 0,
+                                    transition: 'all 150ms',
+                                }}
+                                onMouseEnter={(e) => { if (!uploading) e.currentTarget.style.color = 'var(--primary-400)'; }}
+                                onMouseLeave={(e) => { if (!uploading && !pendingFile) e.currentTarget.style.color = 'var(--slate-400)'; }}
+                            >
+                                <Paperclip size={18} />
+                            </button>
                             <button
                                 onClick={() => fileInputRef.current?.click()}
                                 disabled={uploading}
@@ -2732,22 +3007,22 @@ export default function ChatPage() {
 
                             <button
                                 onClick={handleSendMessage}
-                                disabled={(!messageText.trim() && pendingImages.length === 0) || sending || uploading}
+                                disabled={(!messageText.trim() && pendingImages.length === 0 && !pendingFile) || sending || uploading}
                                 title="Send"
                                 style={{
                                     width: 40,
                                     height: 40,
                                     borderRadius: 10,
-                                    background: (messageText.trim() || pendingImages.length > 0) ? 'var(--primary-500)' : 'rgba(255,255,255,0.04)',
-                                    border: (messageText.trim() || pendingImages.length > 0) ? 'none' : '1px solid rgba(255,255,255,0.08)',
+                                    background: (messageText.trim() || pendingImages.length > 0 || pendingFile) ? 'var(--primary-500)' : 'rgba(255,255,255,0.04)',
+                                    border: (messageText.trim() || pendingImages.length > 0 || pendingFile) ? 'none' : '1px solid rgba(255,255,255,0.08)',
                                     color: 'white',
-                                    cursor: (messageText.trim() || pendingImages.length > 0) && !sending && !uploading ? 'pointer' : 'not-allowed',
+                                    cursor: (messageText.trim() || pendingImages.length > 0 || pendingFile) && !sending && !uploading ? 'pointer' : 'not-allowed',
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
                                     flexShrink: 0,
                                     transition: 'all 150ms',
-                                    opacity: (messageText.trim() || pendingImages.length > 0) ? 1 : 0.5,
+                                    opacity: (messageText.trim() || pendingImages.length > 0 || pendingFile) ? 1 : 0.5,
                                 }}
                             >
                                 {(sending || uploading) ? (
@@ -2966,7 +3241,7 @@ export default function ChatPage() {
                                                     {file.name}
                                                 </p>
                                                 <p style={{ fontSize: 10, color: 'var(--slate-500)', margin: 0 }}>
-                                                    {file.senderName} · {file.type.toUpperCase()}
+                                                    {file.senderName} · {file.size ? formatFileSize(file.size) : getFileExtension(file.name)}
                                                 </p>
                                             </div>
                                             <ExternalLink size={14} style={{ color: 'var(--slate-500)', flexShrink: 0 }} />
