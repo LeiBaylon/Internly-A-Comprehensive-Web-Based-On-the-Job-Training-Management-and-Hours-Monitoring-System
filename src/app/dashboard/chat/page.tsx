@@ -39,7 +39,231 @@ import {
     Check,
     Hash,
     Pencil,
+    Crop,
+    RotateCw,
+    ZoomIn,
+    ZoomOut,
 } from 'lucide-react';
+import Cropper from 'react-easy-crop';
+import type { Area } from 'react-easy-crop';
+
+// ─── Crop helper ────────────────────────────────────────
+
+async function getCroppedImg(imageSrc: string, pixelCrop: Area, rotation = 0): Promise<Blob> {
+    const image = await createImage(imageSrc);
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d')!;
+
+    const rRad = (rotation * Math.PI) / 180;
+    const { width: bW, height: bH } = rotateSize(image.width, image.height, rotation);
+
+    canvas.width = bW;
+    canvas.height = bH;
+
+    ctx.translate(bW / 2, bH / 2);
+    ctx.rotate(rRad);
+    ctx.translate(-image.width / 2, -image.height / 2);
+    ctx.drawImage(image, 0, 0);
+
+    const croppedCanvas = document.createElement('canvas');
+    const croppedCtx = croppedCanvas.getContext('2d')!;
+    croppedCanvas.width = pixelCrop.width;
+    croppedCanvas.height = pixelCrop.height;
+
+    croppedCtx.drawImage(
+        canvas,
+        pixelCrop.x, pixelCrop.y, pixelCrop.width, pixelCrop.height,
+        0, 0, pixelCrop.width, pixelCrop.height,
+    );
+
+    return new Promise((resolve, reject) => {
+        croppedCanvas.toBlob((blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('Canvas toBlob failed'));
+        }, 'image/jpeg', 0.92);
+    });
+}
+
+function createImage(url: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+        const img = new window.Image();
+        img.addEventListener('load', () => resolve(img));
+        img.addEventListener('error', (e) => reject(e));
+        img.crossOrigin = 'anonymous';
+        img.src = url;
+    });
+}
+
+function rotateSize(width: number, height: number, rotation: number) {
+    const rRad = (rotation * Math.PI) / 180;
+    return {
+        width: Math.abs(Math.cos(rRad) * width) + Math.abs(Math.sin(rRad) * height),
+        height: Math.abs(Math.sin(rRad) * width) + Math.abs(Math.cos(rRad) * height),
+    };
+}
+
+// ─── Image Editor Modal ─────────────────────────────────
+
+function ImageEditorModal({
+    imageSrc,
+    onSave,
+    onCancel,
+}: {
+    imageSrc: string;
+    onSave: (croppedBlob: Blob, previewUrl: string) => void;
+    onCancel: () => void;
+}) {
+    const [crop, setCrop] = useState({ x: 0, y: 0 });
+    const [zoom, setZoom] = useState(1);
+    const [rotation, setRotation] = useState(0);
+    const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
+    const [aspect, setAspect] = useState<number | undefined>(undefined);
+    const [saving, setSaving] = useState(false);
+
+    const onCropComplete = useCallback((_: Area, croppedPixels: Area) => {
+        setCroppedAreaPixels(croppedPixels);
+    }, []);
+
+    const handleSave = async () => {
+        if (!croppedAreaPixels) return;
+        setSaving(true);
+        try {
+            const blob = await getCroppedImg(imageSrc, croppedAreaPixels, rotation);
+            const url = URL.createObjectURL(blob);
+            onSave(blob, url);
+        } catch (err) {
+            console.error('Crop failed:', err);
+            alert('Failed to crop image.');
+        }
+        setSaving(false);
+    };
+
+    const aspectOptions: { label: string; value: number | undefined }[] = [
+        { label: 'Free', value: undefined },
+        { label: '1:1', value: 1 },
+        { label: '4:3', value: 4 / 3 },
+        { label: '16:9', value: 16 / 9 },
+    ];
+
+    return (
+        <div
+            onClick={onCancel}
+            style={{
+                position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+                backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
+                zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+        >
+            <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                    width: '90vw', maxWidth: 600, maxHeight: '90vh',
+                    background: 'var(--slate-900)', borderRadius: 16,
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    display: 'flex', flexDirection: 'column', overflow: 'hidden',
+                }}
+            >
+                {/* Header */}
+                <div style={{
+                    padding: '14px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                }}>
+                    <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'white' }}>
+                        <Crop size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+                        Edit Image
+                    </h3>
+                    <button onClick={onCancel} style={{
+                        background: 'none', border: 'none', color: 'var(--slate-400)', cursor: 'pointer',
+                    }}>
+                        <X size={20} />
+                    </button>
+                </div>
+
+                {/* Crop area */}
+                <div style={{ position: 'relative', width: '100%', height: 350, background: '#111' }}>
+                    <Cropper
+                        image={imageSrc}
+                        crop={crop}
+                        zoom={zoom}
+                        rotation={rotation}
+                        aspect={aspect}
+                        onCropChange={setCrop}
+                        onZoomChange={setZoom}
+                        onRotationChange={setRotation}
+                        onCropComplete={onCropComplete}
+                    />
+                </div>
+
+                {/* Controls */}
+                <div style={{ padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {/* Zoom */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <ZoomOut size={16} style={{ color: 'var(--slate-400)', flexShrink: 0 }} />
+                        <input
+                            type="range" min={1} max={3} step={0.05} value={zoom}
+                            onChange={(e) => setZoom(Number(e.target.value))}
+                            style={{ flex: 1, accentColor: 'var(--primary-500)' }}
+                        />
+                        <ZoomIn size={16} style={{ color: 'var(--slate-400)', flexShrink: 0 }} />
+                    </div>
+
+                    {/* Rotation */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <RotateCw size={16} style={{ color: 'var(--slate-400)', flexShrink: 0 }} />
+                        <input
+                            type="range" min={0} max={360} step={1} value={rotation}
+                            onChange={(e) => setRotation(Number(e.target.value))}
+                            style={{ flex: 1, accentColor: 'var(--primary-500)' }}
+                        />
+                        <span style={{ color: 'var(--slate-400)', fontSize: 12, minWidth: 36, textAlign: 'right' }}>
+                            {rotation}°
+                        </span>
+                    </div>
+
+                    {/* Aspect ratio */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ color: 'var(--slate-400)', fontSize: 12, flexShrink: 0 }}>Ratio:</span>
+                        {aspectOptions.map((opt) => (
+                            <button
+                                key={opt.label}
+                                onClick={() => setAspect(opt.value)}
+                                style={{
+                                    padding: '4px 10px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+                                    border: aspect === opt.value ? '1px solid var(--primary-500)' : '1px solid rgba(255,255,255,0.1)',
+                                    background: aspect === opt.value ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
+                                    color: aspect === opt.value ? 'var(--primary-400)' : 'var(--slate-400)',
+                                    cursor: 'pointer', transition: 'all 150ms',
+                                }}
+                            >
+                                {opt.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Footer */}
+                <div style={{
+                    padding: '12px 20px', borderTop: '1px solid rgba(255,255,255,0.06)',
+                    display: 'flex', justifyContent: 'flex-end', gap: 10,
+                }}>
+                    <button onClick={onCancel} style={{
+                        padding: '8px 20px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)',
+                        background: 'transparent', color: 'var(--slate-300)', cursor: 'pointer', fontSize: 13,
+                    }}>
+                        Cancel
+                    </button>
+                    <button onClick={handleSave} disabled={saving} style={{
+                        padding: '8px 20px', borderRadius: 8, border: 'none',
+                        background: 'var(--primary-500)', color: 'white', cursor: saving ? 'not-allowed' : 'pointer',
+                        fontSize: 13, fontWeight: 600, opacity: saving ? 0.7 : 1,
+                    }}>
+                        {saving ? 'Applying…' : 'Apply Crop'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 // ─── Profile Modal ──────────────────────────────────────
 
@@ -415,7 +639,8 @@ export default function ChatPage() {
     const [previewImage, setPreviewImage] = useState<string | null>(null);
     const [uploading, setUploading] = useState(false);
     const [sending, setSending] = useState(false);
-    const [pendingImages, setPendingImages] = useState<{ file: File; preview: string }[]>([]);
+    const [pendingImages, setPendingImages] = useState<{ file: File | Blob; preview: string }[]>([]);
+    const [editingImageIndex, setEditingImageIndex] = useState<number | null>(null);
     // Group chat creation state
     const [showGroupCreate, setShowGroupCreate] = useState(false);
     const [groupName, setGroupName] = useState('');
@@ -2026,8 +2251,8 @@ export default function ChatPage() {
                                         onClick={() => fileInputRef.current?.click()}
                                         disabled={uploading}
                                         style={{
-                                            width: 72,
-                                            height: 72,
+                                            width: 80,
+                                            height: 80,
                                             borderRadius: 10,
                                             border: '2px dashed rgba(255,255,255,0.15)',
                                             background: 'rgba(255,255,255,0.04)',
@@ -2051,15 +2276,15 @@ export default function ChatPage() {
                                         }}
                                         title="Add more images"
                                     >
-                                        <Plus size={22} />
-                                        <span style={{ fontSize: 9, fontWeight: 500 }}>Add</span>
+                                        <Plus size={24} />
+                                        <span style={{ fontSize: 10, fontWeight: 500 }}>Add More</span>
                                     </button>
 
                                     {pendingImages.map((img, idx) => (
                                         <div key={idx} style={{
                                             position: 'relative',
-                                            width: 72,
-                                            height: 72,
+                                            width: 80,
+                                            height: 80,
                                             borderRadius: 10,
                                             overflow: 'hidden',
                                             border: '1px solid rgba(255,255,255,0.1)',
@@ -2075,33 +2300,68 @@ export default function ChatPage() {
                                                     display: 'block',
                                                 }}
                                             />
+                                            {/* Overlay with edit & remove buttons */}
+                                            <div style={{
+                                                position: 'absolute',
+                                                inset: 0,
+                                                background: 'rgba(0,0,0,0.3)',
+                                                opacity: 0,
+                                                transition: 'opacity 150ms',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                gap: 6,
+                                            }}
+                                            onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.opacity = '0'; }}
+                                            >
+                                                <button
+                                                    onClick={() => setEditingImageIndex(idx)}
+                                                    style={{
+                                                        width: 28, height: 28, borderRadius: '50%',
+                                                        background: 'rgba(99,102,241,0.9)',
+                                                        border: 'none', color: 'white', cursor: 'pointer',
+                                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                        padding: 0,
+                                                    }}
+                                                    title="Edit / Crop"
+                                                >
+                                                    <Crop size={14} />
+                                                </button>
+                                                <button
+                                                    onClick={() => removePendingImage(idx)}
+                                                    style={{
+                                                        width: 28, height: 28, borderRadius: '50%',
+                                                        background: 'rgba(239,68,68,0.9)',
+                                                        border: 'none', color: 'white', cursor: 'pointer',
+                                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                        padding: 0,
+                                                    }}
+                                                    title="Remove"
+                                                >
+                                                    <X size={14} />
+                                                </button>
+                                            </div>
+                                            {/* Always-visible remove X in corner */}
                                             <button
                                                 onClick={() => removePendingImage(idx)}
                                                 style={{
-                                                    position: 'absolute',
-                                                    top: 3,
-                                                    right: 3,
-                                                    width: 20,
-                                                    height: 20,
-                                                    borderRadius: '50%',
-                                                    background: 'rgba(0,0,0,0.7)',
-                                                    border: 'none',
-                                                    color: 'white',
-                                                    cursor: 'pointer',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    justifyContent: 'center',
+                                                    position: 'absolute', top: 3, right: 3,
+                                                    width: 18, height: 18, borderRadius: '50%',
+                                                    background: 'rgba(0,0,0,0.7)', border: 'none',
+                                                    color: 'white', cursor: 'pointer',
+                                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
                                                     padding: 0,
                                                 }}
                                                 title="Remove"
                                             >
-                                                <X size={12} />
+                                                <X size={10} />
                                             </button>
                                         </div>
                                     ))}
                                 </div>
-                                <div style={{ fontSize: 11, color: 'var(--slate-500)', marginTop: 4 }}>
-                                    {pendingImages.length} image{pendingImages.length !== 1 ? 's' : ''} selected — press Send when ready
+                                <div style={{ fontSize: 11, color: 'var(--slate-500)', marginTop: 6 }}>
+                                    {pendingImages.length} image{pendingImages.length !== 1 ? 's' : ''} selected — hover to edit/crop, press Send when ready
                                 </div>
                             </div>
                         )}
@@ -2229,6 +2489,23 @@ export default function ChatPage() {
             )}
             {previewImage && (
                 <ImagePreviewModal url={previewImage} onClose={() => setPreviewImage(null)} />
+            )}
+
+            {/* Image Editor Modal */}
+            {editingImageIndex !== null && pendingImages[editingImageIndex] && (
+                <ImageEditorModal
+                    imageSrc={pendingImages[editingImageIndex].preview}
+                    onSave={(croppedBlob, previewUrl) => {
+                        setPendingImages(prev => {
+                            const updated = [...prev];
+                            URL.revokeObjectURL(updated[editingImageIndex].preview);
+                            updated[editingImageIndex] = { file: croppedBlob, preview: previewUrl };
+                            return updated;
+                        });
+                        setEditingImageIndex(null);
+                    }}
+                    onCancel={() => setEditingImageIndex(null)}
+                />
             )}
 
             {/* Nickname Modal */}

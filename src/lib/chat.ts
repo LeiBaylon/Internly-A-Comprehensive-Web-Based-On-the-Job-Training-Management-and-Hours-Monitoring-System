@@ -308,10 +308,10 @@ export async function setNickname(
 
 export async function uploadChatImage(
     _conversationId: string,
-    file: File,
+    file: File | Blob,
 ): Promise<string> {
     const formData = new FormData();
-    formData.append('image', file);
+    formData.append('image', file, file instanceof File ? file.name : `image_${Date.now()}.jpg`);
 
     const response = await fetch('/api/upload-image', {
         method: 'POST',
