@@ -415,8 +415,7 @@ export default function ChatPage() {
     const [previewImage, setPreviewImage] = useState<string | null>(null);
     const [uploading, setUploading] = useState(false);
     const [sending, setSending] = useState(false);
-    const [pendingImage, setPendingImage] = useState<File | null>(null);
-    const [pendingImagePreview, setPendingImagePreview] = useState<string | null>(null);
+    const [pendingImages, setPendingImages] = useState<{ file: File; preview: string }[]>([]);
     // Group chat creation state
     const [showGroupCreate, setShowGroupCreate] = useState(false);
     const [groupName, setGroupName] = useState('');
@@ -561,10 +560,11 @@ export default function ChatPage() {
         if (activeConversationId) {
             setTimeout(() => messageInputRef.current?.focus(), 100);
         }
-        // Clear pending image when switching conversations
-        if (pendingImagePreview) URL.revokeObjectURL(pendingImagePreview);
-        setPendingImage(null);
-        setPendingImagePreview(null);
+        // Clear pending images when switching conversations
+        setPendingImages(prev => {
+            prev.forEach(img => URL.revokeObjectURL(img.preview));
+            return [];
+        });
         if (fileInputRef.current) fileInputRef.current.value = '';
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeConversationId]);
@@ -642,35 +642,55 @@ export default function ChatPage() {
         setSavingNickname(false);
     };
 
-    const clearPendingImage = () => {
-        if (pendingImagePreview) URL.revokeObjectURL(pendingImagePreview);
-        setPendingImage(null);
-        setPendingImagePreview(null);
+    const clearAllPendingImages = () => {
+        pendingImages.forEach(img => URL.revokeObjectURL(img.preview));
+        setPendingImages([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
+    const removePendingImage = (index: number) => {
+        setPendingImages(prev => {
+            const updated = [...prev];
+            URL.revokeObjectURL(updated[index].preview);
+            updated.splice(index, 1);
+            return updated;
+        });
     };
 
     const handleSendMessage = async () => {
         const hasText = messageText.trim().length > 0;
-        const hasImage = !!pendingImage;
-        if ((!hasText && !hasImage) || !activeConversationId || !activeConversation) return;
+        const hasImages = pendingImages.length > 0;
+        if ((!hasText && !hasImages) || !activeConversationId || !activeConversation) return;
         const text = messageText.trim();
         setMessageText('');
         setSending(true);
 
         try {
             const otherIds = activeConversation.participants.filter(p => p !== currentUserId);
-            let imageUrl: string | undefined;
-            if (pendingImage) {
+
+            if (hasImages) {
                 setUploading(true);
-                imageUrl = await uploadChatImage(activeConversationId, pendingImage);
+                // Upload all images
+                const imageUrls: string[] = [];
+                for (const img of pendingImages) {
+                    const url = await uploadChatImage(activeConversationId, img.file);
+                    imageUrls.push(url);
+                }
                 setUploading(false);
-                clearPendingImage();
+                clearAllPendingImages();
+
+                // Send first image with text (if any), rest as separate image messages
+                await sendMessage(activeConversationId, currentUserId, otherIds, text || undefined, imageUrls[0]);
+                for (let i = 1; i < imageUrls.length; i++) {
+                    await sendMessage(activeConversationId, currentUserId, otherIds, undefined, imageUrls[i]);
+                }
+            } else {
+                await sendMessage(activeConversationId, currentUserId, otherIds, text);
             }
-            await sendMessage(activeConversationId, currentUserId, otherIds, text || undefined, imageUrl);
         } catch (err) {
             console.error('Failed to send message:', err);
             setUploading(false);
-            if (text) setMessageText(text); // Restore the message so user can retry
+            if (text) setMessageText(text);
             setChatError('Failed to send message. Please try again.');
         }
         setSending(false);
@@ -678,24 +698,26 @@ export default function ChatPage() {
     };
 
     const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file || !activeConversationId || !activeConversation) return;
+        const files = e.target.files;
+        if (!files || files.length === 0 || !activeConversationId || !activeConversation) return;
 
-        // Validate file
-        if (!file.type.startsWith('image/')) {
-            alert('Please select an image file.');
-            return;
+        const newImages: { file: File; preview: string }[] = [];
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            if (!file.type.startsWith('image/')) {
+                alert(`"${file.name}" is not an image file. Skipped.`);
+                continue;
+            }
+            if (file.size > 5 * 1024 * 1024) {
+                alert(`"${file.name}" exceeds 5MB. Skipped.`);
+                continue;
+            }
+            newImages.push({ file, preview: URL.createObjectURL(file) });
         }
-        if (file.size > 5 * 1024 * 1024) {
-            alert('Image must be under 5MB.');
-            return;
+
+        if (newImages.length > 0) {
+            setPendingImages(prev => [...prev, ...newImages]);
         }
-
-        // Revoke old preview URL if any
-        if (pendingImagePreview) URL.revokeObjectURL(pendingImagePreview);
-
-        setPendingImage(file);
-        setPendingImagePreview(URL.createObjectURL(file));
         if (fileInputRef.current) fileInputRef.current.value = '';
         messageInputRef.current?.focus();
     };
@@ -1985,54 +2007,101 @@ export default function ChatPage() {
                             <div ref={messagesEndRef} />
                         </div>
 
-                        {/* Pending image preview */}
-                        {pendingImagePreview && (
+                        {/* Pending images preview */}
+                        {pendingImages.length > 0 && (
                             <div style={{
-                                padding: '8px 16px 0',
+                                padding: '10px 16px 4px',
                                 borderTop: '1px solid rgba(255,255,255,0.06)',
                                 background: 'var(--slate-950)',
                                 flexShrink: 0,
                             }}>
                                 <div style={{
-                                    position: 'relative',
-                                    display: 'inline-block',
-                                    borderRadius: 10,
-                                    overflow: 'hidden',
-                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    display: 'flex',
+                                    flexWrap: 'wrap',
+                                    gap: 8,
+                                    alignItems: 'flex-end',
                                 }}>
-                                    <img
-                                        src={pendingImagePreview}
-                                        alt="Preview"
-                                        style={{
-                                            maxHeight: 120,
-                                            maxWidth: 180,
-                                            objectFit: 'cover',
-                                            display: 'block',
-                                            borderRadius: 10,
-                                        }}
-                                    />
+                                    {/* Add more images button */}
                                     <button
-                                        onClick={clearPendingImage}
+                                        onClick={() => fileInputRef.current?.click()}
+                                        disabled={uploading}
                                         style={{
-                                            position: 'absolute',
-                                            top: 4,
-                                            right: 4,
-                                            width: 22,
-                                            height: 22,
-                                            borderRadius: '50%',
-                                            background: 'rgba(0,0,0,0.7)',
-                                            border: 'none',
-                                            color: 'white',
+                                            width: 72,
+                                            height: 72,
+                                            borderRadius: 10,
+                                            border: '2px dashed rgba(255,255,255,0.15)',
+                                            background: 'rgba(255,255,255,0.04)',
+                                            color: 'var(--slate-400)',
                                             cursor: 'pointer',
                                             display: 'flex',
+                                            flexDirection: 'column',
                                             alignItems: 'center',
                                             justifyContent: 'center',
-                                            padding: 0,
+                                            gap: 2,
+                                            flexShrink: 0,
+                                            transition: 'all 150ms',
                                         }}
-                                        title="Remove image"
+                                        onMouseEnter={(e) => {
+                                            e.currentTarget.style.borderColor = 'var(--primary-400)';
+                                            e.currentTarget.style.color = 'var(--primary-400)';
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)';
+                                            e.currentTarget.style.color = 'var(--slate-400)';
+                                        }}
+                                        title="Add more images"
                                     >
-                                        <X size={14} />
+                                        <Plus size={22} />
+                                        <span style={{ fontSize: 9, fontWeight: 500 }}>Add</span>
                                     </button>
+
+                                    {pendingImages.map((img, idx) => (
+                                        <div key={idx} style={{
+                                            position: 'relative',
+                                            width: 72,
+                                            height: 72,
+                                            borderRadius: 10,
+                                            overflow: 'hidden',
+                                            border: '1px solid rgba(255,255,255,0.1)',
+                                            flexShrink: 0,
+                                        }}>
+                                            <img
+                                                src={img.preview}
+                                                alt={`Preview ${idx + 1}`}
+                                                style={{
+                                                    width: '100%',
+                                                    height: '100%',
+                                                    objectFit: 'cover',
+                                                    display: 'block',
+                                                }}
+                                            />
+                                            <button
+                                                onClick={() => removePendingImage(idx)}
+                                                style={{
+                                                    position: 'absolute',
+                                                    top: 3,
+                                                    right: 3,
+                                                    width: 20,
+                                                    height: 20,
+                                                    borderRadius: '50%',
+                                                    background: 'rgba(0,0,0,0.7)',
+                                                    border: 'none',
+                                                    color: 'white',
+                                                    cursor: 'pointer',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    padding: 0,
+                                                }}
+                                                title="Remove"
+                                            >
+                                                <X size={12} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--slate-500)', marginTop: 4 }}>
+                                    {pendingImages.length} image{pendingImages.length !== 1 ? 's' : ''} selected — press Send when ready
                                 </div>
                             </div>
                         )}
@@ -2040,7 +2109,7 @@ export default function ChatPage() {
                         {/* Message input */}
                         <div style={{
                             padding: '12px 16px',
-                            borderTop: pendingImagePreview ? 'none' : '1px solid rgba(255,255,255,0.06)',
+                            borderTop: pendingImages.length > 0 ? 'none' : '1px solid rgba(255,255,255,0.06)',
                             display: 'flex',
                             alignItems: 'center',
                             gap: 8,
@@ -2051,6 +2120,7 @@ export default function ChatPage() {
                                 type="file"
                                 ref={fileInputRef}
                                 accept="image/*"
+                                multiple
                                 onChange={handleImageUpload}
                                 style={{ display: 'none' }}
                             />
@@ -2116,22 +2186,22 @@ export default function ChatPage() {
 
                             <button
                                 onClick={handleSendMessage}
-                                disabled={(!messageText.trim() && !pendingImage) || sending || uploading}
+                                disabled={(!messageText.trim() && pendingImages.length === 0) || sending || uploading}
                                 title="Send"
                                 style={{
                                     width: 40,
                                     height: 40,
                                     borderRadius: 10,
-                                    background: (messageText.trim() || pendingImage) ? 'var(--primary-500)' : 'rgba(255,255,255,0.04)',
-                                    border: (messageText.trim() || pendingImage) ? 'none' : '1px solid rgba(255,255,255,0.08)',
+                                    background: (messageText.trim() || pendingImages.length > 0) ? 'var(--primary-500)' : 'rgba(255,255,255,0.04)',
+                                    border: (messageText.trim() || pendingImages.length > 0) ? 'none' : '1px solid rgba(255,255,255,0.08)',
                                     color: 'white',
-                                    cursor: (messageText.trim() || pendingImage) && !sending && !uploading ? 'pointer' : 'not-allowed',
+                                    cursor: (messageText.trim() || pendingImages.length > 0) && !sending && !uploading ? 'pointer' : 'not-allowed',
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
                                     flexShrink: 0,
                                     transition: 'all 150ms',
-                                    opacity: (messageText.trim() || pendingImage) ? 1 : 0.5,
+                                    opacity: (messageText.trim() || pendingImages.length > 0) ? 1 : 0.5,
                                 }}
                             >
                                 {(sending || uploading) ? (
