@@ -21,6 +21,7 @@ import {
     setUserOnlineStatus,
     setNickname,
     setTypingStatus,
+    kickGroupMember,
 } from '@/lib/chat';
 import {
     Search,
@@ -48,6 +49,8 @@ import {
     ZoomOut,
     Maximize2,
     Minimize2,
+    UserMinus,
+    Shield,
 } from 'lucide-react';
 import Cropper from 'react-easy-crop';
 import type { Area } from 'react-easy-crop';
@@ -657,6 +660,8 @@ export default function ChatPage() {
     const [nicknameTarget, setNicknameTarget] = useState<string>('');
     const [nicknameValue, setNicknameValue] = useState('');
     const [savingNickname, setSavingNickname] = useState(false);
+    const [showMembersModal, setShowMembersModal] = useState(false);
+    const [kickingUid, setKickingUid] = useState<string | null>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
 
     // ESC key to exit fullscreen
@@ -1205,31 +1210,9 @@ export default function ChatPage() {
                                 </span>
                             )}
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <button
-                                onClick={() => setIsFullscreen(f => !f)}
-                                title={isFullscreen ? 'Exit fullscreen' : 'Expand to fullscreen'}
-                                style={{
-                                    width: 36,
-                                    height: 36,
-                                    borderRadius: 10,
-                                    background: 'rgba(255,255,255,0.04)',
-                                    border: '1px solid rgba(255,255,255,0.08)',
-                                    color: 'var(--slate-400)',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    transition: 'all 150ms',
-                                }}
-                                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; }}
-                                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
-                            >
-                                {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-                            </button>
-                            <button
-                                onClick={() => setShowUserSearch(true)}
-                                title="New conversation"
+                        <button
+                            onClick={() => setShowUserSearch(true)}
+                            title="New conversation"
                             style={{
                                 width: 36,
                                 height: 36,
@@ -1247,8 +1230,7 @@ export default function ChatPage() {
                             onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
                         >
                             <Users size={18} />
-                            </button>
-                        </div>
+                        </button>
                     </div>
 
                     {/* Search */}
@@ -2084,6 +2066,28 @@ export default function ChatPage() {
                                             >
                                                 <Pencil size={14} />
                                             </button>
+                                            <button
+                                                onClick={() => setShowMembersModal(true)}
+                                                title="Manage members"
+                                                style={{
+                                                    width: 34,
+                                                    height: 34,
+                                                    borderRadius: 8,
+                                                    background: 'rgba(255,255,255,0.04)',
+                                                    border: '1px solid rgba(255,255,255,0.08)',
+                                                    color: 'var(--slate-400)',
+                                                    cursor: 'pointer',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    flexShrink: 0,
+                                                    transition: 'all 150ms',
+                                                }}
+                                                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; }}
+                                                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
+                                            >
+                                                <Users size={14} />
+                                            </button>
                                         </>
                                     );
                                 }
@@ -2892,6 +2896,195 @@ export default function ChatPage() {
                                         </button>
                                     </div>
                                 </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Members Modal (Group Chat) */}
+            {showMembersModal && activeConversation?.isGroup && (
+                <div
+                    onClick={() => { setShowMembersModal(false); setKickingUid(null); }}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.6)',
+                        backdropFilter: 'blur(8px)',
+                        WebkitBackdropFilter: 'blur(8px)',
+                        zIndex: 1000,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: 24,
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            background: 'var(--slate-900)',
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            borderRadius: 16,
+                            maxWidth: 420,
+                            width: '100%',
+                            overflow: 'hidden',
+                        }}
+                    >
+                        <div style={{
+                            padding: '16px 20px',
+                            borderBottom: '1px solid rgba(255,255,255,0.06)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                        }}>
+                            <h3 style={{ fontSize: 16, fontWeight: 700, color: 'white', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <Users size={16} style={{ color: 'var(--primary-400)' }} />
+                                Group Members ({activeConversation.participants.length})
+                            </h3>
+                            <button
+                                onClick={() => { setShowMembersModal(false); setKickingUid(null); }}
+                                style={{ background: 'none', border: 'none', color: 'var(--slate-400)', cursor: 'pointer', padding: 4 }}
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <div style={{ padding: '12px 20px', maxHeight: '50vh', overflowY: 'auto' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                {activeConversation.participants.map(uid => {
+                                    const details = activeConversation.participantDetails?.[uid];
+                                    const isMe = uid === currentUserId;
+                                    const isCreator = uid === activeConversation.createdBy;
+                                    const iAmCreator = currentUserId === activeConversation.createdBy;
+                                    const nickname = activeConversation.nicknames?.[uid];
+
+                                    return (
+                                        <div key={uid} style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 10,
+                                            padding: '10px 14px',
+                                            borderRadius: 12,
+                                            background: isCreator ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.03)',
+                                            border: `1px solid ${isCreator ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.06)'}`,
+                                        }}>
+                                            {details?.profileImage ? (
+                                                <img src={details.profileImage} alt="" style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                                            ) : (
+                                                <div style={{
+                                                    width: 36, height: 36, borderRadius: '50%',
+                                                    background: isCreator
+                                                        ? 'linear-gradient(135deg, #7c3aed, #ec4899)'
+                                                        : 'linear-gradient(135deg, #6366f1, #06b6d4)',
+                                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                    fontWeight: 700, fontSize: 14, color: 'white', flexShrink: 0,
+                                                }}>
+                                                    {(details?.name || '?').charAt(0).toUpperCase()}
+                                                </div>
+                                            )}
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                    <p style={{
+                                                        fontSize: 13, fontWeight: 600, color: 'white', margin: 0,
+                                                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                                                    }}>
+                                                        {nickname || details?.name || 'Unknown'}
+                                                        {isMe ? ' (You)' : ''}
+                                                    </p>
+                                                    {isCreator && (
+                                                        <span style={{
+                                                            display: 'inline-flex', alignItems: 'center', gap: 3,
+                                                            fontSize: 10, fontWeight: 600, color: '#a78bfa',
+                                                            background: 'rgba(167,139,250,0.12)',
+                                                            padding: '2px 6px', borderRadius: 6,
+                                                            flexShrink: 0,
+                                                        }}>
+                                                            <Shield size={10} /> Admin
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                {nickname && details?.name && (
+                                                    <p style={{ fontSize: 11, color: 'var(--slate-500)', margin: 0 }}>
+                                                        {details.name}
+                                                    </p>
+                                                )}
+                                                <p style={{ fontSize: 11, color: 'var(--slate-600)', margin: 0 }}>
+                                                    {details?.email || ''}
+                                                </p>
+                                            </div>
+                                            {iAmCreator && !isMe && (
+                                                kickingUid === uid ? (
+                                                    <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                                                        <button
+                                                            onClick={async () => {
+                                                                try {
+                                                                    await kickGroupMember(activeConversation.id, uid);
+                                                                    setKickingUid(null);
+                                                                    if (activeConversation.participants.length <= 2) {
+                                                                        setShowMembersModal(false);
+                                                                    }
+                                                                } catch (err) {
+                                                                    console.error('Kick failed:', err);
+                                                                    setChatError('Failed to remove member. Please try again.');
+                                                                    setKickingUid(null);
+                                                                }
+                                                            }}
+                                                            style={{
+                                                                padding: '5px 10px', borderRadius: 6,
+                                                                border: 'none',
+                                                                background: 'rgba(239,68,68,0.9)',
+                                                                color: 'white', fontSize: 11, fontWeight: 600,
+                                                                cursor: 'pointer',
+                                                            }}
+                                                        >
+                                                            Confirm
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setKickingUid(null)}
+                                                            style={{
+                                                                padding: '5px 10px', borderRadius: 6,
+                                                                border: '1px solid rgba(255,255,255,0.1)',
+                                                                background: 'rgba(255,255,255,0.04)',
+                                                                color: 'var(--slate-400)', fontSize: 11, fontWeight: 600,
+                                                                cursor: 'pointer',
+                                                            }}
+                                                        >
+                                                            Cancel
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    <button
+                                                        onClick={() => setKickingUid(uid)}
+                                                        title={`Remove ${details?.name || 'member'}`}
+                                                        style={{
+                                                            width: 30, height: 30, borderRadius: 8,
+                                                            background: 'rgba(239,68,68,0.08)',
+                                                            border: '1px solid rgba(239,68,68,0.15)',
+                                                            color: '#f87171',
+                                                            cursor: 'pointer',
+                                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                            flexShrink: 0,
+                                                            transition: 'all 150ms',
+                                                        }}
+                                                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)'; e.currentTarget.style.borderColor = 'rgba(239,68,68,0.4)'; }}
+                                                        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.08)'; e.currentTarget.style.borderColor = 'rgba(239,68,68,0.15)'; }}
+                                                    >
+                                                        <UserMinus size={14} />
+                                                    </button>
+                                                )
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {currentUserId !== activeConversation.createdBy && (
+                                <p style={{
+                                    fontSize: 12, color: 'var(--slate-500)', marginTop: 12, textAlign: 'center',
+                                    fontStyle: 'italic',
+                                }}>
+                                    Only the group admin can remove members
+                                </p>
                             )}
                         </div>
                     </div>

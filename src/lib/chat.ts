@@ -13,6 +13,7 @@ import {
     Timestamp,
     updateDoc,
     arrayUnion,
+    arrayRemove,
     limit,
     increment,
     writeBatch,
@@ -342,6 +343,61 @@ export async function setTypingStatus(
 }
 
 // ─── Nicknames ──────────────────────────────────────────
+
+// ─── Kick Group Member ──────────────────────────────────
+
+export async function kickGroupMember(
+    conversationId: string,
+    targetUid: string,
+): Promise<void> {
+    const effectiveUid = auth.currentUser?.uid;
+    if (!effectiveUid) throw new Error('Not authenticated');
+
+    const convRef = doc(db, 'conversations', conversationId);
+    const convSnap = await getDoc(convRef);
+    if (!convSnap.exists()) throw new Error('Conversation not found');
+
+    const data = convSnap.data();
+    if (data.createdBy !== effectiveUid) {
+        throw new Error('Only the group creator can kick members');
+    }
+    if (targetUid === effectiveUid) {
+        throw new Error('You cannot kick yourself');
+    }
+    if (!data.participants?.includes(targetUid)) {
+        throw new Error('User is not in this group');
+    }
+
+    // Remove from participants array and clean up related fields
+    const updates: Record<string, unknown> = {
+        participants: arrayRemove(targetUid),
+        [`participantDetails.${targetUid}`]: deleteField(),
+        [`unreadCount.${targetUid}`]: deleteField(),
+        [`nicknames.${targetUid}`]: deleteField(),
+        [`typing.${targetUid}`]: deleteField(),
+    };
+
+    await updateDoc(convRef, updates);
+
+    // Send a system message about the kick
+    const kickedName = data.participantDetails?.[targetUid]?.name || 'A member';
+    await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
+        senderId: 'system',
+        text: `${kickedName} was removed from the group`,
+        imageUrl: null,
+        timestamp: serverTimestamp(),
+        read: true,
+        status: 'seen',
+        readBy: {},
+    });
+
+    // Update last message
+    await updateDoc(convRef, {
+        lastMessage: `${kickedName} was removed from the group`,
+        lastMessageTime: serverTimestamp(),
+        lastMessageSenderId: null,
+    });
+}
 
 export async function setNickname(
     conversationId: string,
