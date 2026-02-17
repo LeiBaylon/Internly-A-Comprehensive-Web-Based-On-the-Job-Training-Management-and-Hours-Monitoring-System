@@ -51,6 +51,11 @@ import {
     Minimize2,
     UserMinus,
     Shield,
+    FolderOpen,
+    Link2,
+    FileText,
+    ExternalLink,
+    Grid3X3,
 } from 'lucide-react';
 import Cropper from 'react-easy-crop';
 import type { Area } from 'react-easy-crop';
@@ -662,6 +667,8 @@ export default function ChatPage() {
     const [savingNickname, setSavingNickname] = useState(false);
     const [showMembersModal, setShowMembersModal] = useState(false);
     const [kickingUid, setKickingUid] = useState<string | null>(null);
+    const [showMediaGallery, setShowMediaGallery] = useState(false);
+    const [mediaTab, setMediaTab] = useState<'images' | 'files' | 'links'>('images');
     const [isFullscreen, setIsFullscreen] = useState(false);
 
     // ESC key to exit fullscreen
@@ -871,6 +878,57 @@ export default function ChatPage() {
             });
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeConversation, currentUserId, typingTick]);
+
+    // ─── Media Gallery: extract images, files, and links from messages ───
+    const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`[\]]+/gi;
+
+    const galleryImages = React.useMemo(() => {
+        return messages
+            .filter(m => m.imageUrl)
+            .map(m => ({
+                id: m.id,
+                url: m.imageUrl!,
+                senderId: m.senderId,
+                senderName: activeConversation?.participantDetails?.[m.senderId]?.name || 'Unknown',
+                timestamp: m.timestamp,
+            }))
+            .reverse(); // newest first
+    }, [messages, activeConversation]);
+
+    const galleryLinks = React.useMemo(() => {
+        const links: { id: string; url: string; text: string; senderId: string; senderName: string; timestamp: Message['timestamp'] }[] = [];
+        for (const m of messages) {
+            if (!m.text) continue;
+            const matches = m.text.match(URL_REGEX);
+            if (matches) {
+                for (const url of matches) {
+                    // Skip image hosting URLs that are already shown as images
+                    if (m.imageUrl && url === m.imageUrl) continue;
+                    links.push({
+                        id: `${m.id}-${url}`,
+                        url,
+                        text: m.text,
+                        senderId: m.senderId,
+                        senderName: activeConversation?.participantDetails?.[m.senderId]?.name || 'Unknown',
+                        timestamp: m.timestamp,
+                    });
+                }
+            }
+        }
+        return links.reverse(); // newest first
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [messages, activeConversation]);
+
+    const galleryFiles = React.useMemo(() => {
+        // Future: when file uploads (PDF, docs) are supported, extract them here
+        // For now, return empty array
+        return [] as { id: string; name: string; url: string; type: string; senderId: string; senderName: string; timestamp: Message['timestamp'] }[];
+    }, []);
+
+    // Close media gallery when switching conversations
+    useEffect(() => {
+        setShowMediaGallery(false);
+    }, [activeConversationId]);
 
     // Focus input when conversation opens & clear pending image
     useEffect(() => {
@@ -2195,6 +2253,29 @@ export default function ChatPage() {
                             })()}
                             {/* Fullscreen toggle */}
                             <button
+                                onClick={() => { setShowMediaGallery(g => !g); setMediaTab('images'); }}
+                                title="Media gallery"
+                                style={{
+                                    width: 34,
+                                    height: 34,
+                                    borderRadius: 8,
+                                    background: showMediaGallery ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
+                                    border: `1px solid ${showMediaGallery ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.08)'}`,
+                                    color: showMediaGallery ? 'var(--primary-400)' : 'var(--slate-400)',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    flexShrink: 0,
+                                    transition: 'all 150ms',
+                                    marginLeft: 4,
+                                }}
+                                onMouseEnter={(e) => { if (!showMediaGallery) { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; } }}
+                                onMouseLeave={(e) => { if (!showMediaGallery) { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; } }}
+                            >
+                                <Grid3X3 size={14} />
+                            </button>
+                            <button
                                 onClick={() => setIsFullscreen(f => !f)}
                                 title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
                                 style={{
@@ -2688,6 +2769,291 @@ export default function ChatPage() {
                 )}
             </div>
 
+            {/* ─── MEDIA GALLERY PANEL ────────────────────── */}
+            {showMediaGallery && activeConversationId && activeConversation && (
+                <div
+                    style={{
+                        width: 320,
+                        minWidth: 280,
+                        borderLeft: '1px solid rgba(255,255,255,0.06)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        background: 'rgba(255,255,255,0.01)',
+                        overflow: 'hidden',
+                    }}
+                    className="chat-media-panel"
+                >
+                    {/* Gallery Header */}
+                    <div style={{
+                        padding: '14px 16px',
+                        borderBottom: '1px solid rgba(255,255,255,0.06)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                    }}>
+                        <h3 style={{ fontSize: 15, fontWeight: 700, color: 'white', display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <FolderOpen size={16} style={{ color: 'var(--primary-400)' }} />
+                            Shared Media
+                        </h3>
+                        <button
+                            onClick={() => setShowMediaGallery(false)}
+                            style={{ background: 'none', border: 'none', color: 'var(--slate-400)', cursor: 'pointer', padding: 4 }}
+                        >
+                            <X size={16} />
+                        </button>
+                    </div>
+
+                    {/* Tabs */}
+                    <div style={{
+                        display: 'flex',
+                        borderBottom: '1px solid rgba(255,255,255,0.06)',
+                        padding: '0 8px',
+                    }}>
+                        {([
+                            { key: 'images' as const, label: 'Images', icon: <ImageIcon size={13} />, count: galleryImages.length },
+                            { key: 'files' as const, label: 'Files', icon: <FileText size={13} />, count: galleryFiles.length },
+                            { key: 'links' as const, label: 'Links', icon: <Link2 size={13} />, count: galleryLinks.length },
+                        ]).map(tab => (
+                            <button
+                                key={tab.key}
+                                onClick={() => setMediaTab(tab.key)}
+                                style={{
+                                    flex: 1,
+                                    padding: '10px 6px',
+                                    background: 'none',
+                                    border: 'none',
+                                    borderBottom: mediaTab === tab.key ? '2px solid var(--primary-400)' : '2px solid transparent',
+                                    color: mediaTab === tab.key ? 'var(--primary-400)' : 'var(--slate-500)',
+                                    cursor: 'pointer',
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 4,
+                                    transition: 'all 150ms',
+                                }}
+                            >
+                                {tab.icon}
+                                {tab.label}
+                                {tab.count > 0 && (
+                                    <span style={{
+                                        fontSize: 10,
+                                        background: mediaTab === tab.key ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.06)',
+                                        color: mediaTab === tab.key ? 'var(--primary-400)' : 'var(--slate-500)',
+                                        padding: '1px 5px',
+                                        borderRadius: 6,
+                                        fontWeight: 700,
+                                    }}>
+                                        {tab.count}
+                                    </span>
+                                )}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Gallery Content */}
+                    <div style={{ flex: 1, overflowY: 'auto', padding: 12 }} className="chat-messages-area">
+                        {/* ── Images Tab ── */}
+                        {mediaTab === 'images' && (
+                            galleryImages.length === 0 ? (
+                                <div style={{
+                                    display: 'flex', flexDirection: 'column', alignItems: 'center',
+                                    justifyContent: 'center', height: '100%', gap: 12, padding: 24,
+                                }}>
+                                    <div style={{
+                                        width: 56, height: 56, borderRadius: '50%',
+                                        background: 'rgba(99,102,241,0.08)',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    }}>
+                                        <ImageIcon size={24} style={{ color: 'var(--primary-400)', opacity: 0.5 }} />
+                                    </div>
+                                    <p style={{ fontSize: 13, color: 'var(--slate-500)', textAlign: 'center' }}>
+                                        No images shared yet
+                                    </p>
+                                    <p style={{ fontSize: 11, color: 'var(--slate-600)', textAlign: 'center' }}>
+                                        Images shared in this chat will appear here
+                                    </p>
+                                </div>
+                            ) : (
+                                <div style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(3, 1fr)',
+                                    gap: 4,
+                                }}>
+                                    {galleryImages.map(img => (
+                                        <div
+                                            key={img.id}
+                                            onClick={() => setPreviewImage(img.url)}
+                                            style={{
+                                                aspectRatio: '1',
+                                                borderRadius: 8,
+                                                overflow: 'hidden',
+                                                cursor: 'zoom-in',
+                                                border: '1px solid rgba(255,255,255,0.06)',
+                                                position: 'relative',
+                                            }}
+                                        >
+                                            <img
+                                                src={img.url}
+                                                alt="Shared"
+                                                style={{
+                                                    width: '100%',
+                                                    height: '100%',
+                                                    objectFit: 'cover',
+                                                    display: 'block',
+                                                }}
+                                                loading="lazy"
+                                            />
+                                            <div style={{
+                                                position: 'absolute', bottom: 0, left: 0, right: 0,
+                                                padding: '16px 4px 3px',
+                                                background: 'linear-gradient(transparent, rgba(0,0,0,0.7))',
+                                                fontSize: 9,
+                                                color: 'rgba(255,255,255,0.8)',
+                                                whiteSpace: 'nowrap',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                            }}>
+                                                {img.senderName.split(' ')[0]}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )
+                        )}
+
+                        {/* ── Files Tab ── */}
+                        {mediaTab === 'files' && (
+                            galleryFiles.length === 0 ? (
+                                <div style={{
+                                    display: 'flex', flexDirection: 'column', alignItems: 'center',
+                                    justifyContent: 'center', height: '100%', gap: 12, padding: 24,
+                                }}>
+                                    <div style={{
+                                        width: 56, height: 56, borderRadius: '50%',
+                                        background: 'rgba(99,102,241,0.08)',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    }}>
+                                        <FileText size={24} style={{ color: 'var(--primary-400)', opacity: 0.5 }} />
+                                    </div>
+                                    <p style={{ fontSize: 13, color: 'var(--slate-500)', textAlign: 'center' }}>
+                                        No files shared yet
+                                    </p>
+                                    <p style={{ fontSize: 11, color: 'var(--slate-600)', textAlign: 'center' }}>
+                                        PDFs and documents shared in this chat will appear here
+                                    </p>
+                                </div>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                    {galleryFiles.map(file => (
+                                        <a
+                                            key={file.id}
+                                            href={file.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            style={{
+                                                display: 'flex', alignItems: 'center', gap: 10,
+                                                padding: '10px 12px', borderRadius: 10,
+                                                background: 'rgba(255,255,255,0.03)',
+                                                border: '1px solid rgba(255,255,255,0.06)',
+                                                textDecoration: 'none', transition: 'all 150ms',
+                                            }}
+                                        >
+                                            <FileText size={18} style={{ color: 'var(--primary-400)', flexShrink: 0 }} />
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <p style={{ fontSize: 12, fontWeight: 600, color: 'white', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                    {file.name}
+                                                </p>
+                                                <p style={{ fontSize: 10, color: 'var(--slate-500)', margin: 0 }}>
+                                                    {file.senderName} · {file.type.toUpperCase()}
+                                                </p>
+                                            </div>
+                                            <ExternalLink size={14} style={{ color: 'var(--slate-500)', flexShrink: 0 }} />
+                                        </a>
+                                    ))}
+                                </div>
+                            )
+                        )}
+
+                        {/* ── Links Tab ── */}
+                        {mediaTab === 'links' && (
+                            galleryLinks.length === 0 ? (
+                                <div style={{
+                                    display: 'flex', flexDirection: 'column', alignItems: 'center',
+                                    justifyContent: 'center', height: '100%', gap: 12, padding: 24,
+                                }}>
+                                    <div style={{
+                                        width: 56, height: 56, borderRadius: '50%',
+                                        background: 'rgba(99,102,241,0.08)',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    }}>
+                                        <Link2 size={24} style={{ color: 'var(--primary-400)', opacity: 0.5 }} />
+                                    </div>
+                                    <p style={{ fontSize: 13, color: 'var(--slate-500)', textAlign: 'center' }}>
+                                        No links shared yet
+                                    </p>
+                                    <p style={{ fontSize: 11, color: 'var(--slate-600)', textAlign: 'center' }}>
+                                        URLs shared in this chat will appear here
+                                    </p>
+                                </div>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                    {galleryLinks.map(link => {
+                                        let hostname = '';
+                                        try { hostname = new URL(link.url).hostname; } catch { hostname = link.url; }
+                                        return (
+                                            <a
+                                                key={link.id}
+                                                href={link.url}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                style={{
+                                                    display: 'flex', alignItems: 'flex-start', gap: 10,
+                                                    padding: '10px 12px', borderRadius: 10,
+                                                    background: 'rgba(255,255,255,0.03)',
+                                                    border: '1px solid rgba(255,255,255,0.06)',
+                                                    textDecoration: 'none', transition: 'all 150ms',
+                                                }}
+                                                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)'; }}
+                                                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.03)'; }}
+                                            >
+                                                <div style={{
+                                                    width: 32, height: 32, borderRadius: 8,
+                                                    background: 'rgba(99,102,241,0.1)',
+                                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                    flexShrink: 0,
+                                                }}>
+                                                    <Link2 size={14} style={{ color: 'var(--primary-400)' }} />
+                                                </div>
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    <p style={{
+                                                        fontSize: 12, fontWeight: 600, color: '#93c5fd', margin: 0,
+                                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                    }}>
+                                                        {hostname}
+                                                    </p>
+                                                    <p style={{
+                                                        fontSize: 10, color: 'var(--slate-500)', margin: '2px 0 0',
+                                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                    }}>
+                                                        {link.url}
+                                                    </p>
+                                                    <p style={{ fontSize: 10, color: 'var(--slate-600)', margin: '2px 0 0' }}>
+                                                        {link.senderName}
+                                                    </p>
+                                                </div>
+                                                <ExternalLink size={14} style={{ color: 'var(--slate-500)', flexShrink: 0, marginTop: 2 }} />
+                                            </a>
+                                        );
+                                    })}
+                                </div>
+                            )
+                        )}
+                    </div>
+                </div>
+            )}
+
             {/* Modals */}
             {selectedProfile && (
                 <ProfileModal chatUser={selectedProfile} onClose={() => setSelectedProfile(null)} />
@@ -3124,6 +3490,9 @@ export default function ChatPage() {
                     }
                     .chat-back-btn {
                         display: flex !important;
+                    }
+                    .chat-media-panel {
+                        display: none !important;
                     }
                 }
             `}</style>
