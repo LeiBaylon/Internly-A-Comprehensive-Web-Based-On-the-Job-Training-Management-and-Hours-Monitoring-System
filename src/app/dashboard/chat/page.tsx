@@ -658,11 +658,24 @@ export default function ChatPage() {
     const [nicknameValue, setNicknameValue] = useState('');
     const [savingNickname, setSavingNickname] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
+
+    // ESC key to exit fullscreen
+    useEffect(() => {
+        if (!isFullscreen) return;
+        const handleEsc = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setIsFullscreen(false);
+        };
+        window.addEventListener('keydown', handleEsc);
+        return () => window.removeEventListener('keydown', handleEsc);
+    }, [isFullscreen]);
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const messageInputRef = useRef<HTMLInputElement>(null);
     const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const isTypingRef = useRef(false);
+    const lastTypingWriteRef = useRef<number>(0);
+    const [typingTick, setTypingTick] = useState(0);
 
     // Always use Firebase Auth UID for chat operations to match Firestore rules
     const currentUserId = firebaseUser?.uid || user?.id || '';
@@ -780,7 +793,9 @@ export default function ChatPage() {
                 setMessages(msgs);
                 // Mark as read + mark messages as seen
                 markConversationRead(activeConversationId, currentUserId).catch(() => {});
-                markMessagesAsSeen(activeConversationId, currentUserId, msgs).catch(() => {});
+                markMessagesAsSeen(activeConversationId, currentUserId, msgs).catch((err) => {
+                    console.warn('markMessagesAsSeen failed:', err);
+                });
             },
             (error) => {
                 console.error('Messages subscription error:', error);
@@ -795,16 +810,20 @@ export default function ChatPage() {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
-    // Typing indicator: send typing status and auto-clear after 3s
+    // Typing indicator: send typing status, refresh every 2s, auto-clear after 3s
     const handleTyping = useCallback(() => {
         if (!activeConversationId || !currentUserId) return;
-        if (!isTypingRef.current) {
+        const now = Date.now();
+        // Write typing status on first keystroke, then refresh every 2s
+        if (!isTypingRef.current || (now - lastTypingWriteRef.current > 2000)) {
             isTypingRef.current = true;
+            lastTypingWriteRef.current = now;
             setTypingStatus(activeConversationId, currentUserId, true);
         }
         if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
         typingTimeoutRef.current = setTimeout(() => {
             isTypingRef.current = false;
+            lastTypingWriteRef.current = 0;
             setTypingStatus(activeConversationId, currentUserId, false);
         }, 3000);
     }, [activeConversationId, currentUserId]);
@@ -822,6 +841,13 @@ export default function ChatPage() {
 
     const activeConversation = conversations.find(c => c.id === activeConversationId);
 
+    // Periodic tick to re-evaluate stale typing indicators (every 1s when someone is typing)
+    useEffect(() => {
+        if (!activeConversation?.typing || Object.keys(activeConversation.typing).length === 0) return;
+        const iv = setInterval(() => setTypingTick(t => t + 1), 1000);
+        return () => clearInterval(iv);
+    }, [activeConversation?.typing]);
+
     // Compute who's typing (other participants)
     const typingUsers = React.useMemo(() => {
         if (!activeConversation?.typing || !currentUserId) return [];
@@ -829,16 +855,17 @@ export default function ChatPage() {
         return Object.entries(activeConversation.typing)
             .filter(([uid, ts]) => {
                 if (uid === currentUserId) return false;
-                // Only show if timestamp is within last 5 seconds
+                // Only show if timestamp is within last 8 seconds
                 const tsMs = ts?.toMillis?.() || 0;
-                return now - tsMs < 5000;
+                return now - tsMs < 8000;
             })
             .map(([uid]) => {
                 const details = activeConversation.participantDetails?.[uid];
                 const nick = activeConversation.nicknames?.[uid];
                 return nick || details?.name || 'Someone';
             });
-    }, [activeConversation, currentUserId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeConversation, currentUserId, typingTick]);
 
     // Focus input when conversation opens & clear pending image
     useEffect(() => {
@@ -1178,9 +1205,31 @@ export default function ChatPage() {
                                 </span>
                             )}
                         </div>
-                        <button
-                            onClick={() => setShowUserSearch(true)}
-                            title="New conversation"
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <button
+                                onClick={() => setIsFullscreen(f => !f)}
+                                title={isFullscreen ? 'Exit fullscreen' : 'Expand to fullscreen'}
+                                style={{
+                                    width: 36,
+                                    height: 36,
+                                    borderRadius: 10,
+                                    background: 'rgba(255,255,255,0.04)',
+                                    border: '1px solid rgba(255,255,255,0.08)',
+                                    color: 'var(--slate-400)',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    transition: 'all 150ms',
+                                }}
+                                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
+                            >
+                                {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                            </button>
+                            <button
+                                onClick={() => setShowUserSearch(true)}
+                                title="New conversation"
                             style={{
                                 width: 36,
                                 height: 36,
@@ -1198,7 +1247,8 @@ export default function ChatPage() {
                             onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
                         >
                             <Users size={18} />
-                        </button>
+                            </button>
+                        </div>
                     </div>
 
                     {/* Search */}
