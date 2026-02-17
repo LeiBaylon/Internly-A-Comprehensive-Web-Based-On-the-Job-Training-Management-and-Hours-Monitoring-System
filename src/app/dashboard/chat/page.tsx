@@ -720,8 +720,13 @@ export default function ChatPage() {
             profileImage: user.profileImage,
         };
         upsertChatUser(chatUser).catch(err => {
-            console.error('Failed to register chat user:', err);
-            setChatError('Failed to connect to chat. Check your Firestore rules.');
+            console.error('Failed to register chat user (will retry):', err);
+            // Retry once after a short delay
+            setTimeout(() => {
+                upsertChatUser(chatUser).catch(err2 => {
+                    console.error('Retry also failed:', err2);
+                });
+            }, 2000);
         });
 
         // Set offline on unmount
