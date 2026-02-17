@@ -31,11 +31,8 @@ service cloud.firestore {
 
       // ─── Messages (subcollection) ───────────────────
       match /messages/{messageId} {
-        // Conversation participants can read messages
-        allow read: if isAuthenticated()
-          && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
-        // Conversation participants can create messages
-        allow create: if isAuthenticated()
+        // Conversation participants can read, create, and update messages
+        allow read, create, update: if isAuthenticated()
           && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
       }
     }

@@ -16,9 +16,11 @@ import {
     subscribeToMessages,
     sendMessage,
     markConversationRead,
+    markMessagesAsSeen,
     uploadChatImage,
     setUserOnlineStatus,
     setNickname,
+    setTypingStatus,
 } from '@/lib/chat';
 import {
     Search,
@@ -37,12 +39,15 @@ import {
     Loader2,
     Plus,
     Check,
+    CheckCheck,
     Hash,
     Pencil,
     Crop,
     RotateCw,
     ZoomIn,
     ZoomOut,
+    Maximize2,
+    Minimize2,
 } from 'lucide-react';
 import Cropper from 'react-easy-crop';
 import type { Area } from 'react-easy-crop';
@@ -652,9 +657,12 @@ export default function ChatPage() {
     const [nicknameTarget, setNicknameTarget] = useState<string>('');
     const [nicknameValue, setNicknameValue] = useState('');
     const [savingNickname, setSavingNickname] = useState(false);
+    const [isFullscreen, setIsFullscreen] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const messageInputRef = useRef<HTMLInputElement>(null);
+    const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const isTypingRef = useRef(false);
 
     // Always use Firebase Auth UID for chat operations to match Firestore rules
     const currentUserId = firebaseUser?.uid || user?.id || '';
@@ -770,8 +778,9 @@ export default function ChatPage() {
             activeConversationId,
             (msgs) => {
                 setMessages(msgs);
-                // Mark as read
+                // Mark as read + mark messages as seen
                 markConversationRead(activeConversationId, currentUserId).catch(() => {});
+                markMessagesAsSeen(activeConversationId, currentUserId, msgs).catch(() => {});
             },
             (error) => {
                 console.error('Messages subscription error:', error);
@@ -786,6 +795,51 @@ export default function ChatPage() {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
+    // Typing indicator: send typing status and auto-clear after 3s
+    const handleTyping = useCallback(() => {
+        if (!activeConversationId || !currentUserId) return;
+        if (!isTypingRef.current) {
+            isTypingRef.current = true;
+            setTypingStatus(activeConversationId, currentUserId, true);
+        }
+        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = setTimeout(() => {
+            isTypingRef.current = false;
+            setTypingStatus(activeConversationId, currentUserId, false);
+        }, 3000);
+    }, [activeConversationId, currentUserId]);
+
+    // Clear typing on conversation switch or unmount
+    useEffect(() => {
+        return () => {
+            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+            if (isTypingRef.current && activeConversationId && currentUserId) {
+                setTypingStatus(activeConversationId, currentUserId, false);
+                isTypingRef.current = false;
+            }
+        };
+    }, [activeConversationId, currentUserId]);
+
+    const activeConversation = conversations.find(c => c.id === activeConversationId);
+
+    // Compute who's typing (other participants)
+    const typingUsers = React.useMemo(() => {
+        if (!activeConversation?.typing || !currentUserId) return [];
+        const now = Date.now();
+        return Object.entries(activeConversation.typing)
+            .filter(([uid, ts]) => {
+                if (uid === currentUserId) return false;
+                // Only show if timestamp is within last 5 seconds
+                const tsMs = ts?.toMillis?.() || 0;
+                return now - tsMs < 5000;
+            })
+            .map(([uid]) => {
+                const details = activeConversation.participantDetails?.[uid];
+                const nick = activeConversation.nicknames?.[uid];
+                return nick || details?.name || 'Someone';
+            });
+    }, [activeConversation, currentUserId]);
+
     // Focus input when conversation opens & clear pending image
     useEffect(() => {
         if (activeConversationId) {
@@ -799,8 +853,6 @@ export default function ChatPage() {
         if (fileInputRef.current) fileInputRef.current.value = '';
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeConversationId]);
-
-    const activeConversation = conversations.find(c => c.id === activeConversationId);
 
     const handleStartConversation = async (otherUser: ChatUser) => {
         if (!user) return;
@@ -895,6 +947,13 @@ export default function ChatPage() {
         const text = messageText.trim();
         setMessageText('');
         setSending(true);
+
+        // Clear typing indicator
+        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+        if (isTypingRef.current) {
+            isTypingRef.current = false;
+            setTypingStatus(activeConversationId, currentUserId, false);
+        }
 
         try {
             const otherIds = activeConversation.participants.filter(p => p !== currentUserId);
@@ -1034,13 +1093,15 @@ export default function ChatPage() {
     return (
         <div style={{
             display: 'flex',
-            height: 'calc(100vh - 40px)',
-            maxHeight: 'calc(100vh - 40px)',
+            height: isFullscreen ? '100vh' : 'calc(100vh - 40px)',
+            maxHeight: isFullscreen ? '100vh' : 'calc(100vh - 40px)',
             background: 'var(--slate-950)',
-            borderRadius: 16,
+            borderRadius: isFullscreen ? 0 : 16,
             overflow: 'hidden',
-            border: '1px solid rgba(255,255,255,0.06)',
-            position: 'relative',
+            border: isFullscreen ? 'none' : '1px solid rgba(255,255,255,0.06)',
+            position: isFullscreen ? 'fixed' : 'relative',
+            ...(isFullscreen ? { top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999 } : {}),
+            transition: 'all 200ms ease',
         }}
         className="chat-outer-container"
         >
@@ -2078,6 +2139,30 @@ export default function ChatPage() {
                                     </>
                                 );
                             })()}
+                            {/* Fullscreen toggle */}
+                            <button
+                                onClick={() => setIsFullscreen(f => !f)}
+                                title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                                style={{
+                                    width: 34,
+                                    height: 34,
+                                    borderRadius: 8,
+                                    background: 'rgba(255,255,255,0.04)',
+                                    border: '1px solid rgba(255,255,255,0.08)',
+                                    color: 'var(--slate-400)',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    flexShrink: 0,
+                                    transition: 'all 150ms',
+                                    marginLeft: 4,
+                                }}
+                                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--primary-400)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--slate-400)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
+                            >
+                                {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                            </button>
                         </div>
 
                         {/* Messages area */}
@@ -2218,23 +2303,83 @@ export default function ChatPage() {
                                                 </div>
                                             )}
 
-                                            {/* Timestamp */}
+                                            {/* Timestamp + Status */}
                                             {isLastInGroup && (
-                                                <p style={{
-                                                    fontSize: 10,
-                                                    color: 'var(--slate-600)',
+                                                <div style={{
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: isMine ? 'flex-end' : 'flex-start',
+                                                    gap: 4,
                                                     marginTop: 4,
-                                                    textAlign: isMine ? 'right' : 'left',
                                                     paddingLeft: isMine ? 0 : 4,
                                                     paddingRight: isMine ? 4 : 0,
                                                 }}>
-                                                    {formatMessageTime(msg.timestamp)}
-                                                </p>
+                                                    <span style={{ fontSize: 10, color: 'var(--slate-600)' }}>
+                                                        {formatMessageTime(msg.timestamp)}
+                                                    </span>
+                                                    {isMine && (() => {
+                                                        const status = msg.status || (msg.read ? 'seen' : 'sent');
+                                                        const otherParticipants = activeConversation?.participants.filter(p => p !== currentUserId) || [];
+                                                        const allSeen = otherParticipants.every(p => msg.readBy?.[p]);
+                                                        const effectiveStatus = allSeen ? 'seen' : status;
+
+                                                        if (effectiveStatus === 'seen') {
+                                                            return <CheckCheck size={14} style={{ color: '#60a5fa' }} />;
+                                                        } else if (effectiveStatus === 'delivered') {
+                                                            return <CheckCheck size={14} style={{ color: 'var(--slate-500)' }} />;
+                                                        } else {
+                                                            return <Check size={14} style={{ color: 'var(--slate-500)' }} />;
+                                                        }
+                                                    })()}
+                                                </div>
                                             )}
                                         </div>
                                     </div>
                                 );
                             })}
+
+                            {/* Typing indicator */}
+                            {typingUsers.length > 0 && (
+                                <div style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 8,
+                                    padding: '4px 0 8px 36px',
+                                }}>
+                                    <div style={{
+                                        display: 'flex',
+                                        gap: 3,
+                                        padding: '8px 14px',
+                                        borderRadius: '18px 18px 18px 4px',
+                                        background: 'rgba(255,255,255,0.06)',
+                                    }}>
+                                        <span className="typing-dot" style={{
+                                            width: 6, height: 6, borderRadius: '50%',
+                                            background: 'var(--slate-400)',
+                                            animation: 'typingBounce 1.4s ease-in-out infinite',
+                                            animationDelay: '0ms',
+                                        }} />
+                                        <span className="typing-dot" style={{
+                                            width: 6, height: 6, borderRadius: '50%',
+                                            background: 'var(--slate-400)',
+                                            animation: 'typingBounce 1.4s ease-in-out infinite',
+                                            animationDelay: '200ms',
+                                        }} />
+                                        <span className="typing-dot" style={{
+                                            width: 6, height: 6, borderRadius: '50%',
+                                            background: 'var(--slate-400)',
+                                            animation: 'typingBounce 1.4s ease-in-out infinite',
+                                            animationDelay: '400ms',
+                                        }} />
+                                    </div>
+                                    <span style={{ fontSize: 11, color: 'var(--slate-500)' }}>
+                                        {typingUsers.length === 1
+                                            ? `${typingUsers[0]} is typing…`
+                                            : `${typingUsers.join(', ')} are typing…`}
+                                    </span>
+                                </div>
+                            )}
+
                             <div ref={messagesEndRef} />
                         </div>
 
@@ -2431,7 +2576,7 @@ export default function ChatPage() {
                                 type="text"
                                 placeholder="Type a message..."
                                 value={messageText}
-                                onChange={(e) => setMessageText(e.target.value)}
+                                onChange={(e) => { setMessageText(e.target.value); handleTyping(); }}
                                 onKeyDown={(e) => {
                                     if (e.key === 'Enter' && !e.shiftKey) {
                                         e.preventDefault();

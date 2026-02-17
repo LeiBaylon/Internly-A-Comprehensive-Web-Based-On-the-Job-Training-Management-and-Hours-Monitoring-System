@@ -15,6 +15,8 @@ import {
     arrayUnion,
     limit,
     increment,
+    writeBatch,
+    deleteField,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 
@@ -36,6 +38,8 @@ export interface Message {
     imageUrl?: string;
     timestamp: Timestamp;
     read: boolean;
+    status?: 'sent' | 'delivered' | 'seen';
+    readBy?: Record<string, boolean>;
 }
 
 export interface Conversation {
@@ -51,6 +55,7 @@ export interface Conversation {
     groupAvatar?: string;
     createdBy?: string;
     nicknames?: Record<string, string>;
+    typing?: Record<string, Timestamp>;
 }
 
 // ─── User Profile ───────────────────────────────────────
@@ -231,6 +236,8 @@ export async function sendMessage(
         imageUrl: imageUrl || null,
         timestamp: serverTimestamp(),
         read: false,
+        status: 'sent',
+        readBy: { [effectiveSenderId]: true },
     });
 
     // NON-CRITICAL: Update conversation metadata + unread counts
@@ -246,6 +253,8 @@ export async function sendMessage(
             lastMessageTime: serverTimestamp(),
             lastMessageSenderId: effectiveSenderId,
             ...unreadUpdates,
+            // Clear typing when sending
+            [`typing.${effectiveSenderId}`]: deleteField(),
         });
     } catch (err) {
         console.warn('Failed to update conversation metadata (message was still sent):', err);
@@ -280,6 +289,56 @@ export async function markConversationRead(conversationId: string, uid: string):
     await updateDoc(doc(db, 'conversations', conversationId), {
         [`unreadCount.${effectiveUid}`]: 0,
     });
+}
+
+// Mark all messages in a conversation as seen by this user
+export async function markMessagesAsSeen(
+    conversationId: string,
+    uid: string,
+    messages: Message[],
+): Promise<void> {
+    const effectiveUid = auth.currentUser?.uid || uid;
+    const batch = writeBatch(db);
+    let count = 0;
+
+    for (const msg of messages) {
+        if (msg.senderId !== effectiveUid && !msg.readBy?.[effectiveUid]) {
+            const msgRef = doc(db, 'conversations', conversationId, 'messages', msg.id);
+            batch.update(msgRef, {
+                [`readBy.${effectiveUid}`]: true,
+                status: 'seen',
+            });
+            count++;
+            if (count >= 400) break; // Firestore batch limit is 500
+        }
+    }
+
+    if (count > 0) {
+        await batch.commit();
+    }
+}
+
+// ─── Typing Indicator ───────────────────────────────────
+
+export async function setTypingStatus(
+    conversationId: string,
+    uid: string,
+    isTyping: boolean,
+): Promise<void> {
+    const effectiveUid = auth.currentUser?.uid || uid;
+    try {
+        if (isTyping) {
+            await updateDoc(doc(db, 'conversations', conversationId), {
+                [`typing.${effectiveUid}`]: serverTimestamp(),
+            });
+        } else {
+            await updateDoc(doc(db, 'conversations', conversationId), {
+                [`typing.${effectiveUid}`]: deleteField(),
+            });
+        }
+    } catch {
+        // Non-critical, ignore errors
+    }
 }
 
 // ─── Nicknames ──────────────────────────────────────────
