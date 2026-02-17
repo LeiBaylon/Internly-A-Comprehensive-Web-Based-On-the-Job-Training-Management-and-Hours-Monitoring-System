@@ -14,13 +14,9 @@ import {
     updateDoc,
     arrayUnion,
     limit,
+    increment,
 } from 'firebase/firestore';
-import {
-    ref,
-    uploadBytes,
-    getDownloadURL,
-} from 'firebase/storage';
-import { db, storage } from './firebase';
+import { db, auth } from './firebase';
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -50,14 +46,21 @@ export interface Conversation {
     lastMessageTime?: Timestamp;
     lastMessageSenderId?: string;
     unreadCount: Record<string, number>;
+    isGroup?: boolean;
+    groupName?: string;
+    groupAvatar?: string;
+    createdBy?: string;
+    nicknames?: Record<string, string>;
 }
 
 // ─── User Profile ───────────────────────────────────────
 
 export async function upsertChatUser(user: ChatUser): Promise<void> {
-    const userRef = doc(db, 'chatUsers', user.uid);
+    // Always use Firebase Auth UID for Firestore operations
+    const uid = auth.currentUser?.uid || user.uid;
+    const userRef = doc(db, 'chatUsers', uid);
     await setDoc(userRef, {
-        uid: user.uid,
+        uid: uid,
         name: user.name,
         email: user.email,
         profileImage: user.profileImage || null,
@@ -78,7 +81,8 @@ export async function getAllChatUsers(): Promise<ChatUser[]> {
 }
 
 export async function setUserOnlineStatus(uid: string, online: boolean): Promise<void> {
-    const userRef = doc(db, 'chatUsers', uid);
+    const effectiveUid = auth.currentUser?.uid || uid;
+    const userRef = doc(db, 'chatUsers', effectiveUid);
     await updateDoc(userRef, {
         online,
         lastSeen: serverTimestamp(),
@@ -91,10 +95,13 @@ export async function getOrCreateConversation(
     currentUser: ChatUser,
     otherUser: ChatUser
 ): Promise<string> {
+    // Use Firebase Auth UID to ensure Firestore rules pass
+    const currentUid = auth.currentUser?.uid || currentUser.uid;
+
     // Check if conversation already exists
     const q = query(
         collection(db, 'conversations'),
-        where('participants', 'array-contains', currentUser.uid)
+        where('participants', 'array-contains', currentUid)
     );
     const snap = await getDocs(q);
 
@@ -107,9 +114,9 @@ export async function getOrCreateConversation(
 
     // Create new conversation
     const conversationRef = await addDoc(collection(db, 'conversations'), {
-        participants: [currentUser.uid, otherUser.uid],
+        participants: [currentUid, otherUser.uid],
         participantDetails: {
-            [currentUser.uid]: {
+            [currentUid]: {
                 name: currentUser.name,
                 email: currentUser.email,
                 profileImage: currentUser.profileImage || null,
@@ -124,7 +131,7 @@ export async function getOrCreateConversation(
         lastMessageTime: serverTimestamp(),
         lastMessageSenderId: null,
         unreadCount: {
-            [currentUser.uid]: 0,
+            [currentUid]: 0,
             [otherUser.uid]: 0,
         },
     });
@@ -134,11 +141,13 @@ export async function getOrCreateConversation(
 
 export function subscribeToConversations(
     uid: string,
-    callback: (conversations: Conversation[]) => void
+    callback: (conversations: Conversation[]) => void,
+    onError?: (error: Error) => void,
 ) {
+    const effectiveUid = auth.currentUser?.uid || uid;
     const q = query(
         collection(db, 'conversations'),
-        where('participants', 'array-contains', uid),
+        where('participants', 'array-contains', effectiveUid),
     );
 
     return onSnapshot(q, (snapshot) => {
@@ -155,7 +164,52 @@ export function subscribeToConversations(
         });
 
         callback(conversations);
+    }, (error) => {
+        console.error('Conversations subscription error:', error);
+        onError?.(error);
     });
+}
+
+export async function createGroupConversation(
+    currentUser: ChatUser,
+    members: ChatUser[],
+    groupName: string,
+): Promise<string> {
+    const currentUid = auth.currentUser?.uid || currentUser.uid;
+
+    const allParticipants = [currentUid, ...members.map(m => m.uid)];
+    const participantDetails: Record<string, { name: string; email: string; profileImage?: string }> = {
+        [currentUid]: {
+            name: currentUser.name,
+            email: currentUser.email,
+            profileImage: currentUser.profileImage || null as unknown as undefined,
+        },
+    };
+    const unreadCount: Record<string, number> = { [currentUid]: 0 };
+
+    for (const m of members) {
+        participantDetails[m.uid] = {
+            name: m.name,
+            email: m.email,
+            profileImage: m.profileImage || null as unknown as undefined,
+        };
+        unreadCount[m.uid] = 0;
+    }
+
+    const conversationRef = await addDoc(collection(db, 'conversations'), {
+        participants: allParticipants,
+        participantDetails,
+        lastMessage: `${currentUser.name} created the group`,
+        lastMessageTime: serverTimestamp(),
+        lastMessageSenderId: null,
+        unreadCount,
+        isGroup: true,
+        groupName,
+        groupAvatar: null,
+        createdBy: currentUid,
+    });
+
+    return conversationRef.id;
 }
 
 // ─── Messages ───────────────────────────────────────────
@@ -163,40 +217,45 @@ export function subscribeToConversations(
 export async function sendMessage(
     conversationId: string,
     senderId: string,
-    otherUserId: string,
+    otherUserIds: string | string[],
     text?: string,
     imageUrl?: string,
 ): Promise<void> {
-    // Add message
+    // Use Firebase Auth UID to ensure Firestore rules pass
+    const effectiveSenderId = auth.currentUser?.uid || senderId;
+
+    // CRITICAL: Add the message — this is the primary operation
     await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
-        senderId,
+        senderId: effectiveSenderId,
         text: text || null,
         imageUrl: imageUrl || null,
         timestamp: serverTimestamp(),
         read: false,
     });
 
-    // Update conversation metadata
-    await updateDoc(doc(db, 'conversations', conversationId), {
-        lastMessage: imageUrl ? '📷 Image' : (text || ''),
-        lastMessageTime: serverTimestamp(),
-        lastMessageSenderId: senderId,
-    });
-
-    // Increment unread count for the other user
-    const convDoc = await getDoc(doc(db, 'conversations', conversationId));
-    if (convDoc.exists()) {
-        const data = convDoc.data();
-        const currentUnread = data.unreadCount?.[otherUserId] || 0;
+    // NON-CRITICAL: Update conversation metadata + unread counts
+    // If this fails, the message was still sent — don't throw
+    try {
+        const ids = Array.isArray(otherUserIds) ? otherUserIds : [otherUserIds];
+        const unreadUpdates: Record<string, ReturnType<typeof increment>> = {};
+        for (const id of ids) {
+            unreadUpdates[`unreadCount.${id}`] = increment(1);
+        }
         await updateDoc(doc(db, 'conversations', conversationId), {
-            [`unreadCount.${otherUserId}`]: currentUnread + 1,
+            lastMessage: imageUrl ? '📷 Image' : (text || ''),
+            lastMessageTime: serverTimestamp(),
+            lastMessageSenderId: effectiveSenderId,
+            ...unreadUpdates,
         });
+    } catch (err) {
+        console.warn('Failed to update conversation metadata (message was still sent):', err);
     }
 }
 
 export function subscribeToMessages(
     conversationId: string,
-    callback: (messages: Message[]) => void
+    callback: (messages: Message[]) => void,
+    onError?: (error: Error) => void,
 ) {
     const q = query(
         collection(db, 'conversations', conversationId, 'messages'),
@@ -210,23 +269,60 @@ export function subscribeToMessages(
             ...d.data(),
         })) as Message[];
         callback(messages);
+    }, (error) => {
+        console.error('Messages subscription error:', error);
+        onError?.(error);
     });
 }
 
 export async function markConversationRead(conversationId: string, uid: string): Promise<void> {
+    const effectiveUid = auth.currentUser?.uid || uid;
     await updateDoc(doc(db, 'conversations', conversationId), {
-        [`unreadCount.${uid}`]: 0,
+        [`unreadCount.${effectiveUid}`]: 0,
     });
 }
 
-// ─── Image Upload ───────────────────────────────────────
+// ─── Nicknames ──────────────────────────────────────────
+
+export async function setNickname(
+    conversationId: string,
+    targetUid: string,
+    nickname: string,
+): Promise<void> {
+    const effectiveUid = auth.currentUser?.uid;
+    if (!effectiveUid) throw new Error('Not authenticated');
+
+    if (nickname.trim()) {
+        await updateDoc(doc(db, 'conversations', conversationId), {
+            [`nicknames.${targetUid}`]: nickname.trim(),
+        });
+    } else {
+        // Remove nickname by setting to empty string (Firestore doesn't support deleting nested fields easily)
+        await updateDoc(doc(db, 'conversations', conversationId), {
+            [`nicknames.${targetUid}`]: '',
+        });
+    }
+}
+
+// ─── Image Upload (ImgBB - free) ────────────────────────
 
 export async function uploadChatImage(
-    conversationId: string,
+    _conversationId: string,
     file: File,
 ): Promise<string> {
-    const filename = `${Date.now()}_${file.name}`;
-    const storageRef = ref(storage, `chat-images/${conversationId}/${filename}`);
-    await uploadBytes(storageRef, file);
-    return getDownloadURL(storageRef);
+    const formData = new FormData();
+    formData.append('image', file);
+
+    const response = await fetch('/api/upload-image', {
+        method: 'POST',
+        body: formData,
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: 'Upload failed' }));
+        throw new Error(err.error || 'Image upload failed');
+    }
+
+    const data = await response.json();
+    return data.url;
 }

@@ -183,7 +183,7 @@ export default function SettingsPage() {
                 alignItems: 'start',
             }}>
                 {/* Tab Navigation */}
-                <div className="card" style={{ padding: 12, position: 'sticky', top: 32 }}>
+                <div className="card settings-tab-nav" style={{ padding: 12, position: 'sticky', top: 32, zIndex: 10, background: 'rgb(30, 41, 59)' }}>
                     {tabs.map((tab) => {
                         const Icon = tab.icon;
                         const isActive = activeTab === tab.id;
@@ -521,8 +521,8 @@ export default function SettingsPage() {
 
                             <div className="divider" />
 
-                            <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>
-                                <Shield size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+                            <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <Shield size={16} style={{ flexShrink: 0 }} />
                                 Change Password
                             </h3>
 
@@ -744,6 +744,24 @@ export default function SettingsPage() {
             <style>{`
                 @media (max-width: 768px) {
                     .settings-grid { grid-template-columns: 1fr !important; }
+                    .settings-tab-nav {
+                        position: sticky !important;
+                        top: 0 !important;
+                        z-index: 10 !important;
+                        background: var(--slate-900) !important;
+                        margin: -4px -4px 0 !important;
+                        padding: 8px !important;
+                        border-radius: var(--radius-md) !important;
+                        display: flex !important;
+                        gap: 4px !important;
+                    }
+                    .settings-tab-nav .nav-link {
+                        flex: 1 !important;
+                        justify-content: center !important;
+                        font-size: 12px !important;
+                        padding: 8px 4px !important;
+                        white-space: nowrap !important;
+                    }
                     #settings-account-grid,
                     #settings-password-grid,
                     #settings-dates-grid {

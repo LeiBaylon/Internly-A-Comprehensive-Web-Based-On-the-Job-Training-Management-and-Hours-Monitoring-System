@@ -35,6 +35,7 @@ function LogFormContent() {
     const [dailyHours, setDailyHours] = useState(editingLog?.dailyHours || 8);
     const [showSupervisorList, setShowSupervisorList] = useState(false);
     const [success, setSuccess] = useState(false);
+    const [showConfirm, setShowConfirm] = useState(false);
 
     const toggleActivity = (type: ActivityType) => {
         setActivityTypes((prev) =>
@@ -46,6 +47,12 @@ function LogFormContent() {
         e.preventDefault();
         if (!user) return;
         if (activityTypes.length === 0) return;
+        setShowConfirm(true);
+    };
+
+    const handleConfirmSubmit = () => {
+        if (!user) return;
+        setShowConfirm(false);
 
         if (editingLog) {
             updateLog(editingLog.id, {
@@ -332,6 +339,257 @@ function LogFormContent() {
                     </button>
                 </div>
             </form>
+
+            {/* Confirmation Modal */}
+            {showConfirm && (
+                <div
+                    onClick={() => setShowConfirm(false)}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.6)',
+                        backdropFilter: 'blur(8px)',
+                        WebkitBackdropFilter: 'blur(8px)',
+                        zIndex: 2000,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: 20,
+                        animation: 'confirmFadeIn 0.2s ease-out',
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            background: 'linear-gradient(180deg, rgba(15,23,42,0.98) 0%, rgba(15,23,42,1) 100%)',
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            borderRadius: 20,
+                            maxWidth: 480,
+                            width: '100%',
+                            overflow: 'hidden',
+                            boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
+                            animation: 'confirmSlideIn 0.25s ease-out',
+                        }}
+                    >
+                        {/* Modal header */}
+                        <div style={{
+                            padding: '20px 24px 16px',
+                            borderBottom: '1px solid rgba(255,255,255,0.06)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 12,
+                        }}>
+                            <div style={{
+                                width: 40,
+                                height: 40,
+                                borderRadius: 12,
+                                background: 'rgba(99,102,241,0.1)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                flexShrink: 0,
+                            }}>
+                                <FileText size={20} style={{ color: '#818cf8' }} />
+                            </div>
+                            <div>
+                                <h3 style={{ fontSize: 17, fontWeight: 700, color: 'white', marginBottom: 2 }}>
+                                    {editingLog ? 'Confirm Update' : 'Confirm Submission'}
+                                </h3>
+                                <p style={{ fontSize: 13, color: '#94a3b8' }}>
+                                    Please review your log entry before submitting
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Summary content */}
+                        <div style={{ padding: '16px 24px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                            {/* Date */}
+                            <div style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 12,
+                                padding: '10px 14px',
+                                borderRadius: 12,
+                                background: 'rgba(255,255,255,0.03)',
+                                border: '1px solid rgba(255,255,255,0.06)',
+                            }}>
+                                <Calendar size={16} style={{ color: '#818cf8', flexShrink: 0 }} />
+                                <div style={{ minWidth: 0 }}>
+                                    <p style={{ fontSize: 11, color: '#64748b', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Date</p>
+                                    <p style={{ fontSize: 14, color: '#e2e8f0', fontWeight: 500 }}>
+                                        {new Date(entryDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Activities */}
+                            <div style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: 12,
+                                padding: '10px 14px',
+                                borderRadius: 12,
+                                background: 'rgba(255,255,255,0.03)',
+                                border: '1px solid rgba(255,255,255,0.06)',
+                            }}>
+                                <Tag size={16} style={{ color: '#818cf8', flexShrink: 0, marginTop: 2 }} />
+                                <div style={{ minWidth: 0 }}>
+                                    <p style={{ fontSize: 11, color: '#64748b', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>Activities</p>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                        {activityTypes.map((type) => (
+                                            <span key={type} style={{
+                                                padding: '3px 10px',
+                                                borderRadius: 6,
+                                                background: 'rgba(99,102,241,0.1)',
+                                                border: '1px solid rgba(99,102,241,0.2)',
+                                                color: '#a5b4fc',
+                                                fontSize: 12,
+                                                fontWeight: 600,
+                                            }}>
+                                                {type}
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Task Description */}
+                            <div style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: 12,
+                                padding: '10px 14px',
+                                borderRadius: 12,
+                                background: 'rgba(255,255,255,0.03)',
+                                border: '1px solid rgba(255,255,255,0.06)',
+                            }}>
+                                <FileText size={16} style={{ color: '#818cf8', flexShrink: 0, marginTop: 2 }} />
+                                <div style={{ minWidth: 0, flex: 1 }}>
+                                    <p style={{ fontSize: 11, color: '#64748b', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Description</p>
+                                    <p style={{
+                                        fontSize: 13,
+                                        color: '#cbd5e1',
+                                        lineHeight: 1.6,
+                                        maxHeight: 80,
+                                        overflowY: 'auto',
+                                        wordBreak: 'break-word',
+                                    }}>
+                                        {taskDescription || '—'}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Supervisor & Hours row */}
+                            <div style={{ display: 'flex', gap: 10 }}>
+                                <div style={{
+                                    flex: 1,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 10,
+                                    padding: '10px 14px',
+                                    borderRadius: 12,
+                                    background: 'rgba(255,255,255,0.03)',
+                                    border: '1px solid rgba(255,255,255,0.06)',
+                                }}>
+                                    <User size={16} style={{ color: '#818cf8', flexShrink: 0 }} />
+                                    <div style={{ minWidth: 0 }}>
+                                        <p style={{ fontSize: 11, color: '#64748b', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Supervisor</p>
+                                        <p style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {supervisor || '—'}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 10,
+                                    padding: '10px 14px',
+                                    borderRadius: 12,
+                                    background: 'rgba(99,102,241,0.06)',
+                                    border: '1px solid rgba(99,102,241,0.12)',
+                                    minWidth: 100,
+                                }}>
+                                    <Clock size={16} style={{ color: '#818cf8', flexShrink: 0 }} />
+                                    <div>
+                                        <p style={{ fontSize: 11, color: '#64748b', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Hours</p>
+                                        <p style={{ fontSize: 16, color: '#a5b4fc', fontWeight: 700 }}>{dailyHours}h</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Modal actions */}
+                        <div style={{
+                            padding: '16px 24px 20px',
+                            borderTop: '1px solid rgba(255,255,255,0.06)',
+                            display: 'flex',
+                            gap: 10,
+                            justifyContent: 'flex-end',
+                        }}>
+                            <button
+                                type="button"
+                                onClick={() => setShowConfirm(false)}
+                                style={{
+                                    padding: '10px 20px',
+                                    borderRadius: 10,
+                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    background: 'rgba(255,255,255,0.04)',
+                                    color: '#94a3b8',
+                                    fontSize: 14,
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                    transition: 'all 150ms',
+                                }}
+                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+                            >
+                                Go Back
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleConfirmSubmit}
+                                style={{
+                                    padding: '10px 24px',
+                                    borderRadius: 10,
+                                    border: 'none',
+                                    background: 'linear-gradient(135deg, #10b981, #059669)',
+                                    color: 'white',
+                                    fontSize: 14,
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 8,
+                                    transition: 'all 150ms',
+                                    boxShadow: '0 4px 16px rgba(16,185,129,0.25)',
+                                }}
+                                onMouseEnter={(e) => {
+                                    e.currentTarget.style.transform = 'translateY(-1px)';
+                                    e.currentTarget.style.boxShadow = '0 6px 20px rgba(16,185,129,0.35)';
+                                }}
+                                onMouseLeave={(e) => {
+                                    e.currentTarget.style.transform = 'translateY(0)';
+                                    e.currentTarget.style.boxShadow = '0 4px 16px rgba(16,185,129,0.25)';
+                                }}
+                            >
+                                <Check size={16} />
+                                {editingLog ? 'Confirm Update' : 'Confirm & Submit'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <style>{`
+                @keyframes confirmFadeIn {
+                    from { opacity: 0; }
+                    to { opacity: 1; }
+                }
+                @keyframes confirmSlideIn {
+                    from { opacity: 0; transform: scale(0.95) translateY(10px); }
+                    to { opacity: 1; transform: scale(1) translateY(0); }
+                }
+            `}</style>
         </div>
     );
 }
