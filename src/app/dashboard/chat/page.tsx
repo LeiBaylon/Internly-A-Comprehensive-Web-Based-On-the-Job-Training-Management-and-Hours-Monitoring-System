@@ -61,8 +61,11 @@ import {
     Paperclip,
     Download,
 } from 'lucide-react';
-import Cropper from 'react-easy-crop';
+import dynamic from 'next/dynamic';
 import type { Area } from 'react-easy-crop';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const Cropper = dynamic(() => import('react-easy-crop').then(mod => mod.default), { ssr: false }) as React.ComponentType<any>;
 
 // ─── Crop helper ────────────────────────────────────────
 
@@ -287,7 +290,7 @@ function ImageEditorModal({
 function ProfileModal({ chatUser, onClose }: { chatUser: ChatUser | null; onClose: () => void }) {
     if (!chatUser) return null;
 
-    const initial = chatUser.name.charAt(0).toUpperCase();
+    const initial = (chatUser.name || '?').charAt(0).toUpperCase();
     const isOnline = chatUser.online;
 
     return (
@@ -645,6 +648,12 @@ export default function ChatPage() {
     const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
     const [authLoading, setAuthLoading] = useState(true);
     const [chatError, setChatError] = useState<string | null>(null);
+    // Auto-dismiss error banner after 8 seconds
+    useEffect(() => {
+        if (!chatError) return;
+        const t = setTimeout(() => setChatError(null), 8000);
+        return () => clearTimeout(t);
+    }, [chatError]);
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [allUsers, setAllUsers] = useState<ChatUser[]>([]);
     const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -979,7 +988,7 @@ export default function ChatPage() {
         if (!user) return;
         try {
             const chatUser: ChatUser = {
-                uid: user.id,
+                uid: currentUserId || user.id,
                 name: user.name,
                 email: user.email,
                 profileImage: user.profileImage,
@@ -999,7 +1008,7 @@ export default function ChatPage() {
         setCreatingGroup(true);
         try {
             const chatUser: ChatUser = {
-                uid: user.id,
+                uid: currentUserId || user.id,
                 name: user.name,
                 email: user.email,
                 profileImage: user.profileImage,
@@ -1069,6 +1078,7 @@ export default function ChatPage() {
         const text = messageText.trim();
         setMessageText('');
         setSending(true);
+        setChatError(null); // Clear any previous error
 
         // Clear typing indicator
         if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
@@ -1111,11 +1121,12 @@ export default function ChatPage() {
             } else {
                 await sendMessage(activeConversationId, currentUserId, otherIds, text);
             }
-        } catch (err) {
+        } catch (err: unknown) {
             console.error('Failed to send message:', err);
             setUploading(false);
             if (text) setMessageText(text);
-            setChatError('Failed to send message. Please try again.');
+            const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+            setChatError(`Failed to send message: ${errorMsg}`);
         }
         setSending(false);
         messageInputRef.current?.focus();
@@ -1190,8 +1201,8 @@ export default function ChatPage() {
     };
 
     const filteredUsers = allUsers.filter(u =>
-        u.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        u.email.toLowerCase().includes(searchQuery.toLowerCase())
+        (u.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (u.email || '').toLowerCase().includes(searchQuery.toLowerCase())
     );
 
     const totalUnread = conversations.reduce((sum, c) => sum + (c.unreadCount?.[currentUserId] || 0), 0);
@@ -1567,12 +1578,12 @@ export default function ChatPage() {
                                                     color: 'white',
                                                     flexShrink: 0,
                                                 }}>
-                                                    {u.name.charAt(0).toUpperCase()}
+                                                    {(u.name || '?').charAt(0).toUpperCase()}
                                                 </div>
                                             )}
                                             <div style={{ minWidth: 0, flex: 1 }}>
-                                                <p style={{ fontSize: 14, fontWeight: 600, color: 'white', margin: 0 }}>{u.name}</p>
-                                                <p style={{ fontSize: 12, color: 'var(--slate-500)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email}</p>
+                                                <p style={{ fontSize: 14, fontWeight: 600, color: 'white', margin: 0 }}>{u.name || 'Unknown'}</p>
+                                                <p style={{ fontSize: 12, color: 'var(--slate-500)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email || ''}</p>
                                             </div>
                                             <div style={{
                                                 width: 8,
@@ -1724,10 +1735,10 @@ export default function ChatPage() {
                                                     fontWeight: 700,
                                                     color: 'white',
                                                 }}>
-                                                    {m.name.charAt(0).toUpperCase()}
+                                                    {(m.name || '?').charAt(0).toUpperCase()}
                                                 </div>
                                             )}
-                                            {m.name.split(' ')[0]}
+                                            {(m.name || 'Unknown').split(' ')[0]}
                                             <button
                                                 onClick={() => toggleGroupMember(m)}
                                                 style={{ background: 'none', border: 'none', color: '#a5b4fc', cursor: 'pointer', padding: 0, display: 'flex' }}
@@ -1772,8 +1783,8 @@ export default function ChatPage() {
                             <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
                                 {allUsers
                                     .filter(u =>
-                                        u.name.toLowerCase().includes(groupSearchQuery.toLowerCase()) ||
-                                        u.email.toLowerCase().includes(groupSearchQuery.toLowerCase())
+                                        (u.name || '').toLowerCase().includes(groupSearchQuery.toLowerCase()) ||
+                                        (u.email || '').toLowerCase().includes(groupSearchQuery.toLowerCase())
                                     )
                                     .map(u => {
                                         const isSelected = selectedGroupMembers.some(m => m.uid === u.uid);
@@ -1818,12 +1829,12 @@ export default function ChatPage() {
                                                         color: 'white',
                                                         flexShrink: 0,
                                                     }}>
-                                                        {u.name.charAt(0).toUpperCase()}
+                                                        {(u.name || '?').charAt(0).toUpperCase()}
                                                     </div>
                                                 )}
                                                 <div style={{ minWidth: 0, flex: 1 }}>
-                                                    <p style={{ fontSize: 14, fontWeight: 600, color: 'white', margin: 0 }}>{u.name}</p>
-                                                    <p style={{ fontSize: 12, color: 'var(--slate-500)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email}</p>
+                                                    <p style={{ fontSize: 14, fontWeight: 600, color: 'white', margin: 0 }}>{u.name || 'Unknown'}</p>
+                                                    <p style={{ fontSize: 12, color: 'var(--slate-500)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email || ''}</p>
                                                 </div>
                                                 <div style={{
                                                     width: 24,
@@ -1930,11 +1941,11 @@ export default function ChatPage() {
                                 if (!searchQuery || showUserSearch) return true;
                                 const display = getConversationDisplay(c);
                                 if (c.isGroup) {
-                                    return display.name.toLowerCase().includes(searchQuery.toLowerCase());
+                                    return (display.name || '').toLowerCase().includes(searchQuery.toLowerCase());
                                 }
                                 const other = getOtherUser(c);
-                                return other.name.toLowerCase().includes(searchQuery.toLowerCase())
-                                    || other.email.toLowerCase().includes(searchQuery.toLowerCase());
+                                return (other.name || '').toLowerCase().includes(searchQuery.toLowerCase())
+                                    || (other.email || '').toLowerCase().includes(searchQuery.toLowerCase());
                             })
                             .map(conv => {
                                 const display = getConversationDisplay(conv);
@@ -1999,7 +2010,7 @@ export default function ChatPage() {
                                                     fontSize: 18,
                                                     color: 'white',
                                                 }}>
-                                                    {display.name.charAt(0).toUpperCase()}
+                                                    {(display.name || '?').charAt(0).toUpperCase()}
                                                 </div>
                                             )}
                                         </div>
@@ -2224,7 +2235,7 @@ export default function ChatPage() {
                                                     fontSize: 16,
                                                     color: 'white',
                                                 }}>
-                                                    {other.name.charAt(0).toUpperCase()}
+                                                    {(other.name || '?').charAt(0).toUpperCase()}
                                                 </div>
                                             )}
                                         </button>
@@ -2484,7 +2495,7 @@ export default function ChatPage() {
                                                     flexShrink: 0,
                                                     marginTop: 2,
                                                 }}>
-                                                    {sender.name.charAt(0).toUpperCase()}
+                                                    {(sender.name || '?').charAt(0).toUpperCase()}
                                                 </div>
                                             );
                                         })()}
@@ -3190,7 +3201,7 @@ export default function ChatPage() {
                                                 overflow: 'hidden',
                                                 textOverflow: 'ellipsis',
                                             }}>
-                                                {img.senderName.split(' ')[0]}
+                                                {(img.senderName || 'Unknown').split(' ')[0]}
                                             </div>
                                         </div>
                                     ))}

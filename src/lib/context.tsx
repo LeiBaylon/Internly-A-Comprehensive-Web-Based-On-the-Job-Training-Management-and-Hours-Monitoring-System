@@ -1,8 +1,23 @@
 'use client';
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { User, DailyLog, HourStats } from './types';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
+import { User, DailyLog, WeeklyReport, HourStats } from './types';
 import * as storage from './storage';
 import { calculateHourStats } from './calculations';
+import {
+    saveUserToFirestore,
+    getUserFromFirestore,
+    updateUserInFirestore,
+    getDailyLogsFromFirestore,
+    addDailyLogToFirestore,
+    updateDailyLogInFirestore,
+    deleteDailyLogFromFirestore,
+    getWeeklyReportsFromFirestore,
+    saveWeeklyReportToFirestore,
+    migrateLocalDataToFirestore,
+    migrateFromFlatToSubcollections,
+} from './firestore';
+import { auth } from './firebase';
 
 interface AppContextType {
     user: User | null;
@@ -12,61 +27,143 @@ interface AppContextType {
     signUp: (name: string, email: string, password: string, hours: number, startDate: string) => Promise<void>;
     login: (email: string, password: string, rememberMe: boolean) => Promise<void>;
     logout: () => void;
-    updateUser: (updates: Partial<User>) => void;
-    addLog: (log: Omit<DailyLog, 'id' | 'createdAt' | 'updatedAt'>) => void;
-    updateLog: (id: string, updates: Partial<DailyLog>) => void;
-    deleteLog: (id: string) => void;
-    refreshData: () => void;
+    updateUser: (updates: Partial<User>) => Promise<void>;
+    addLog: (log: Omit<DailyLog, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>;
+    updateLog: (id: string, updates: Partial<DailyLog>) => Promise<void>;
+    deleteLog: (id: string) => Promise<void>;
+    refreshData: () => Promise<void>;
     signUpWithGoogle: () => Promise<void>;
     loginWithGoogle: () => Promise<void>;
     verifyCode: (code: string) => Promise<void>;
     resendCode: () => Promise<void>;
+    saveWeeklyReport: (report: Omit<WeeklyReport, 'id' | 'createdAt'>) => Promise<WeeklyReport>;
+    getWeeklyReports: (userId: string) => Promise<WeeklyReport[]>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+const emptyStats: HourStats = {
+    totalRequired: 0,
+    totalRendered: 0,
+    hoursThisWeek: 0,
+    remaining: 0,
+    progressPercentage: 0,
+    weeklyAverage: 0,
+    daysLogged: 0,
+};
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [logs, setLogs] = useState<DailyLog[]>([]);
-    const [stats, setStats] = useState<HourStats>({
-        totalRequired: 0,
-        totalRendered: 0,
-        hoursThisWeek: 0,
-        remaining: 0,
-        progressPercentage: 0,
-        weeklyAverage: 0,
-        daysLogged: 0,
-    });
+    const [stats, setStats] = useState<HourStats>(emptyStats);
     const [loading, setLoading] = useState(true);
+    const initializedRef = useRef(false);
 
-    const refreshData = useCallback(() => {
-        const currentUser = storage.getCurrentUser();
-        setUser(currentUser);
-        if (currentUser) {
-            const userLogs = storage.getDailyLogs(currentUser.id);
-            setLogs(userLogs);
-            setStats(calculateHourStats(userLogs, currentUser.totalRequiredHours));
-        } else {
-            setLogs([]);
-            setStats({
-                totalRequired: 0,
-                totalRendered: 0,
-                hoursThisWeek: 0,
-                remaining: 0,
-                progressPercentage: 0,
-                weeklyAverage: 0,
-                daysLogged: 0,
-            });
+    // ─── Refresh: Firestore is the source of truth ──────
+    const refreshData = useCallback(async () => {
+        const firebaseUser = auth.currentUser;
+        if (!firebaseUser) {
+            // Fall back to localStorage-only (offline / legacy)
+            const localUser = storage.getCurrentUser();
+            setUser(localUser);
+            if (localUser) {
+                const localLogs = storage.getDailyLogs(localUser.id);
+                setLogs(localLogs);
+                setStats(calculateHourStats(localLogs, localUser.totalRequiredHours));
+            } else {
+                setLogs([]);
+                setStats(emptyStats);
+            }
+            return;
+        }
+
+        try {
+            // Load user from Firestore
+            let firestoreUser = await getUserFromFirestore(firebaseUser.uid);
+
+            if (!firestoreUser) {
+                // New login on another device or first time — check localStorage for migration
+                const localUser = storage.getCurrentUser();
+                if (localUser) {
+                    const localLogs = storage.getDailyLogs(localUser.id);
+                    const localReports = storage.getWeeklyReports(localUser.id);
+                    await migrateLocalDataToFirestore(localUser, localLogs, localReports);
+                    firestoreUser = await getUserFromFirestore(firebaseUser.uid);
+                }
+            }
+
+            if (firestoreUser) {
+                // Cache to localStorage
+                storage.cacheUser(firestoreUser);
+                setUser(firestoreUser);
+
+                // One-time migration: flat collections → subcollections
+                try {
+                    await migrateFromFlatToSubcollections();
+                } catch { /* non-critical */ }
+
+                // Load logs from Firestore (now from subcollections)
+                const firestoreLogs = await getDailyLogsFromFirestore(firebaseUser.uid);
+                storage.cacheDailyLogs(firestoreUser.id, firestoreLogs);
+                setLogs(firestoreLogs);
+                setStats(calculateHourStats(firestoreLogs, firestoreUser.totalRequiredHours));
+            } else {
+                setUser(null);
+                setLogs([]);
+                setStats(emptyStats);
+            }
+        } catch (err) {
+            console.error('[Context] Error loading from Firestore, falling back to cache:', err);
+            // Fall back to localStorage cache
+            const localUser = storage.getCurrentUser();
+            setUser(localUser);
+            if (localUser) {
+                const localLogs = storage.getDailyLogs(localUser.id);
+                setLogs(localLogs);
+                setStats(calculateHourStats(localLogs, localUser.totalRequiredHours));
+            }
         }
     }, []);
 
+    // ─── Auth state listener ────────────────────────────
     useEffect(() => {
-        refreshData();
-        setLoading(false);
+        const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+            if (firebaseUser) {
+                await refreshData();
+            } else {
+                // Check if there's a localStorage-only session (legacy)
+                const localUser = storage.getCurrentUser();
+                if (localUser) {
+                    setUser(localUser);
+                    const localLogs = storage.getDailyLogs(localUser.id);
+                    setLogs(localLogs);
+                    setStats(calculateHourStats(localLogs, localUser.totalRequiredHours));
+                } else {
+                    setUser(null);
+                    setLogs([]);
+                    setStats(emptyStats);
+                }
+            }
+            if (!initializedRef.current) {
+                initializedRef.current = true;
+                setLoading(false);
+            }
+        });
+
+        return () => unsubscribe();
     }, [refreshData]);
 
-    // Sign up: send verification code to email, store pending data
+    // ─── Sign Up ────────────────────────────────────────
     const handleSignUp = async (name: string, email: string, password: string, hours: number, startDate: string) => {
+        // Check localStorage for existing account (quick check)
+        const existingLocal = storage.findUserByEmail(email);
+        if (existingLocal) {
+            throw new Error('An account with this email already exists.');
+        }
+
+        // Note: We don't check Firestore here because the user isn't authenticated yet.
+        // Firebase Auth will reject duplicate emails when createUserWithEmailAndPassword is called.
+
         const res = await fetch('/api/send-verification', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -89,12 +186,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
     };
 
-    // Verify the 6-digit code, then create Firebase account + localStorage user
+    // ─── Verify Code ────────────────────────────────────
     const handleVerifyCode = async (code: string) => {
         const pending = storage.getPendingSignup();
         if (!pending) throw new Error('No pending signup found. Please sign up again.');
 
-        // Verify code with server
         const res = await fetch('/api/verify-code', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -114,29 +210,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         let uid: string;
 
         if (pending.googleUid) {
-            // Google signup — Firebase account already exists from signInWithPopup
             uid = pending.googleUid;
         } else {
-            // Email/password signup — create Firebase Auth account now
             const { createUserWithEmailAndPassword } = await import('firebase/auth');
-            const { auth } = await import('./firebase');
             const credential = await createUserWithEmailAndPassword(auth, pending.email, pending.password);
             uid = credential.user.uid;
         }
 
-        // Create localStorage user (but don't log them in — they must sign in manually)
-        storage.completeSignUp(pending, uid);
+        // Create user in localStorage (cache) AND Firestore (source of truth)
+        const newUser = storage.completeSignUp(pending, uid);
+
+        // Save to Firestore
+        await saveUserToFirestore(newUser);
+
         storage.clearPendingSignup();
 
-        // Sign out of Firebase so they aren't auto-logged-in
+        // Sign out so they must log in manually
         try {
             const { signOut } = await import('firebase/auth');
-            const { auth } = await import('./firebase');
             await signOut(auth);
         } catch { /* ignore */ }
     };
 
-    // Resend verification code
+    // ─── Resend Code ────────────────────────────────────
     const handleResendCode = async () => {
         const pending = storage.getPendingSignup();
         if (!pending) throw new Error('No pending signup found. Please sign up again.');
@@ -159,20 +255,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
     };
 
-    // Login: Firebase Auth first, fallback to localStorage for legacy users
+    // ─── Login ──────────────────────────────────────────
     const handleLogin = async (email: string, password: string, rememberMe: boolean) => {
         const { signInWithEmailAndPassword } = await import('firebase/auth');
-        const { auth } = await import('./firebase');
 
         try {
-            await signInWithEmailAndPassword(auth, email, password);
-            // Firebase account exists (email was verified at signup)
-            try {
-                const loggedUser = storage.loginByEmail(email, rememberMe);
-                setUser(loggedUser);
-                refreshData();
-            } catch {
-                throw new Error('Account data not found on this device. Please sign up again.');
+            const credential = await signInWithEmailAndPassword(auth, email, password);
+            const uid = credential.user.uid;
+
+            // Load user from Firestore
+            let firestoreUser = await getUserFromFirestore(uid);
+
+            if (!firestoreUser) {
+                // Try to migrate localStorage data
+                const localUser = storage.findUserByEmail(email);
+                if (localUser) {
+                    const localLogs = storage.getDailyLogs(localUser.id);
+                    const localReports = storage.getWeeklyReports(localUser.id);
+                    await migrateLocalDataToFirestore({ ...localUser, id: uid }, localLogs, localReports);
+                    firestoreUser = await getUserFromFirestore(uid);
+                }
+            }
+
+            if (firestoreUser) {
+                storage.cacheUser(firestoreUser);
+                if (rememberMe) storage.setRememberedEmail(email);
+                else storage.clearRememberedEmail();
+                setUser(firestoreUser);
+
+                // Load logs from Firestore
+                const firestoreLogs = await getDailyLogsFromFirestore(uid);
+                storage.cacheDailyLogs(uid, firestoreLogs);
+                setLogs(firestoreLogs);
+                setStats(calculateHourStats(firestoreLogs, firestoreUser.totalRequiredHours));
+            } else {
+                throw new Error('Account data not found. Please sign up again.');
             }
         } catch (err: unknown) {
             const firebaseError = err as { code?: string; message?: string };
@@ -180,40 +297,43 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 // Fallback: legacy localStorage-only user
                 const loggedUser = storage.login(email, password, rememberMe);
                 setUser(loggedUser);
-                refreshData();
+                const localLogs = storage.getDailyLogs(loggedUser.id);
+                setLogs(localLogs);
+                setStats(calculateHourStats(localLogs, loggedUser.totalRequiredHours));
             } else {
                 throw err;
             }
         }
     };
 
+    // ─── Logout ─────────────────────────────────────────
     const handleLogout = async () => {
         try {
             const { signOut } = await import('firebase/auth');
-            const { auth } = await import('./firebase');
             await signOut(auth);
-        } catch { /* ignore Firebase signout errors */ }
+        } catch { /* ignore */ }
         storage.logout();
         setUser(null);
         setLogs([]);
+        setStats(emptyStats);
     };
 
-    // Google sign-up: authenticate with Google, then send verification code
+    // ─── Google Sign-Up ─────────────────────────────────
     const handleSignUpWithGoogle = async () => {
         const { signInWithPopup } = await import('firebase/auth');
-        const { auth, googleProvider } = await import('./firebase');
+        const { googleProvider } = await import('./firebase');
         const result = await signInWithPopup(auth, googleProvider);
         const firebaseUser = result.user;
         const name = firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User';
         const email = firebaseUser.email || '';
 
-        // Check if user already has an account
-        const existingUser = storage.findUserByEmail(email);
-        if (existingUser) {
+        // Check if this Google account already has a profile (by UID — safe for Firestore rules)
+        const existingFirestore = await getUserFromFirestore(firebaseUser.uid);
+        const existingLocal = storage.findUserByEmail(email);
+        if (existingFirestore || existingLocal) {
             throw new Error('An account with this email already exists. Please log in instead.');
         }
 
-        // Send verification code to their Google email
         const res = await fetch('/api/send-verification', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -222,11 +342,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to send verification code.');
 
-        // Store pending signup with Google info
         storage.storePendingSignup({
             name,
             email,
-            password: '', // Google users don't need a password
+            password: '',
             totalRequiredHours: 480,
             startDate: new Date().toISOString().split('T')[0],
             verificationToken: data.token,
@@ -236,42 +355,163 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
     };
 
-    // Google login: only allow if user already registered
+    // ─── Google Login ───────────────────────────────────
     const handleLoginWithGoogle = async () => {
         const { signInWithPopup } = await import('firebase/auth');
-        const { auth, googleProvider } = await import('./firebase');
+        const { googleProvider } = await import('./firebase');
         const result = await signInWithPopup(auth, googleProvider);
         const firebaseUser = result.user;
         const email = firebaseUser.email || '';
+        const uid = firebaseUser.uid;
 
-        // Check if user has a registered account
-        const existingUser = storage.findUserByEmail(email);
-        if (!existingUser) {
+        // Check Firestore by UID, then fall back to localStorage migration
+        let firestoreUser = await getUserFromFirestore(uid);
+
+        if (!firestoreUser) {
+            // Try localStorage migration
+            const localUser = storage.findUserByEmail(email);
+            if (localUser) {
+                const localLogs = storage.getDailyLogs(localUser.id);
+                const localReports = storage.getWeeklyReports(localUser.id);
+                await migrateLocalDataToFirestore({ ...localUser, id: uid }, localLogs, localReports);
+                firestoreUser = await getUserFromFirestore(uid);
+            }
+        }
+
+        if (!firestoreUser) {
             throw new Error('No account found with this email. Please sign up first.');
         }
 
-        storage.loginByEmail(email, false);
-        refreshData();
+        storage.cacheUser(firestoreUser);
+        setUser(firestoreUser);
+
+        const firestoreLogs = await getDailyLogsFromFirestore(uid);
+        storage.cacheDailyLogs(uid, firestoreLogs);
+        setLogs(firestoreLogs);
+        setStats(calculateHourStats(firestoreLogs, firestoreUser.totalRequiredHours));
     };
 
-    const handleUpdateUser = (updates: Partial<User>) => {
+    // ─── Update User ────────────────────────────────────
+    const handleUpdateUser = async (updates: Partial<User>) => {
+        // Update localStorage cache immediately for snappy UI
         storage.updateUser(updates);
-        refreshData();
+        const updatedLocal = storage.getCurrentUser();
+        if (updatedLocal) {
+            setUser(updatedLocal);
+            setStats(calculateHourStats(logs, updatedLocal.totalRequiredHours));
+        }
+
+        // Persist to Firestore
+        const uid = auth.currentUser?.uid || user?.id;
+        if (uid) {
+            try {
+                await updateUserInFirestore(uid, updates);
+            } catch (err) {
+                console.error('[Context] Failed to update user in Firestore:', err);
+            }
+        }
     };
 
-    const handleAddLog = (log: Omit<DailyLog, 'id' | 'createdAt' | 'updatedAt'>) => {
-        storage.addDailyLog(log);
-        refreshData();
+    // ─── Add Log ────────────────────────────────────────
+    const handleAddLog = async (log: Omit<DailyLog, 'id' | 'createdAt' | 'updatedAt'>) => {
+        // Optimistic: add to localStorage immediately
+        const localLog = storage.addDailyLog(log);
+
+        // Update UI
+        const updatedLogs = [...logs, localLog];
+        setLogs(updatedLogs);
+        if (user) setStats(calculateHourStats(updatedLogs, user.totalRequiredHours));
+
+        // Persist to Firestore
+        if (auth.currentUser) {
+            try {
+                const fsLog = await addDailyLogToFirestore(log);
+                // Replace local ID with Firestore ID if different
+                if (fsLog.id !== localLog.id) {
+                    storage.replaceDailyLogId(localLog.id, fsLog.id);
+                    const refreshedLogs = updatedLogs.map(l =>
+                        l.id === localLog.id ? { ...l, id: fsLog.id } : l
+                    );
+                    setLogs(refreshedLogs);
+                }
+                // Refresh supervisors from Firestore if auto-saved
+                if (log.supervisor && user) {
+                    const fsUser = await getUserFromFirestore(auth.currentUser.uid);
+                    if (fsUser) {
+                        storage.cacheUser(fsUser);
+                        setUser(fsUser);
+                    }
+                }
+            } catch (err) {
+                console.error('[Context] Failed to save log to Firestore:', err);
+            }
+        }
     };
 
-    const handleUpdateLog = (id: string, updates: Partial<DailyLog>) => {
+    // ─── Update Log ─────────────────────────────────────
+    const handleUpdateLog = async (id: string, updates: Partial<DailyLog>) => {
+        // Optimistic update
         storage.updateDailyLog(id, updates);
-        refreshData();
+        const updatedLogs = logs.map(l => l.id === id ? { ...l, ...updates, updatedAt: new Date().toISOString() } : l);
+        setLogs(updatedLogs);
+        if (user) setStats(calculateHourStats(updatedLogs, user.totalRequiredHours));
+
+        // Persist to Firestore
+        if (auth.currentUser) {
+            try {
+                await updateDailyLogInFirestore(id, updates);
+            } catch (err) {
+                console.error('[Context] Failed to update log in Firestore:', err);
+            }
+        }
     };
 
-    const handleDeleteLog = (id: string) => {
+    // ─── Delete Log ─────────────────────────────────────
+    const handleDeleteLog = async (id: string) => {
+        // Optimistic delete
         storage.deleteDailyLog(id);
-        refreshData();
+        const updatedLogs = logs.filter(l => l.id !== id);
+        setLogs(updatedLogs);
+        if (user) setStats(calculateHourStats(updatedLogs, user.totalRequiredHours));
+
+        // Persist to Firestore
+        if (auth.currentUser) {
+            try {
+                await deleteDailyLogFromFirestore(id);
+            } catch (err) {
+                console.error('[Context] Failed to delete log from Firestore:', err);
+            }
+        }
+    };
+
+    // ─── Weekly Reports (Firestore-backed) ──────────────
+    const handleSaveWeeklyReport = async (report: Omit<WeeklyReport, 'id' | 'createdAt'>): Promise<WeeklyReport> => {
+        // Save to localStorage cache
+        const localReport = storage.saveWeeklyReport(report);
+
+        // Persist to Firestore
+        if (auth.currentUser) {
+            try {
+                return await saveWeeklyReportToFirestore(report);
+            } catch (err) {
+                console.error('[Context] Failed to save report to Firestore:', err);
+            }
+        }
+        return localReport;
+    };
+
+    const handleGetWeeklyReports = async (userId: string): Promise<WeeklyReport[]> => {
+        // Try Firestore first
+        if (auth.currentUser) {
+            try {
+                const reports = await getWeeklyReportsFromFirestore(userId);
+                return reports;
+            } catch (err) {
+                console.error('[Context] Failed to load reports from Firestore:', err);
+            }
+        }
+        // Fall back to localStorage
+        return storage.getWeeklyReports(userId);
     };
 
     return (
@@ -293,6 +533,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 loginWithGoogle: handleLoginWithGoogle,
                 verifyCode: handleVerifyCode,
                 resendCode: handleResendCode,
+                saveWeeklyReport: handleSaveWeeklyReport,
+                getWeeklyReports: handleGetWeeklyReports,
             }}
         >
             {children}

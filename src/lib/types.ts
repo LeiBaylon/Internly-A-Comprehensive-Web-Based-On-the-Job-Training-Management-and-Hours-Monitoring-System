@@ -76,3 +76,25 @@ export interface HourStats {
   weeklyAverage: number;
   daysLogged: number;
 }
+
+export type NotificationType = 'reminder' | 'system' | 'achievement' | 'report_due';
+
+export interface Notification {
+  id: string;
+  userId: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  read: boolean;
+  link?: string;
+  createdAt: string;
+}
+
+export interface Supervisor {
+  id: string;
+  name: string;
+  email?: string;
+  department?: string;
+  addedBy: string;
+  createdAt: string;
+}

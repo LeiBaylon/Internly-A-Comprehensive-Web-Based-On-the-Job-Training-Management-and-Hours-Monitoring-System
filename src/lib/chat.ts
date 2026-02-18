@@ -87,7 +87,9 @@ export async function getChatUser(uid: string): Promise<ChatUser | null> {
 
 export async function getAllChatUsers(): Promise<ChatUser[]> {
     const snap = await getDocs(collection(db, 'chatUsers'));
-    return snap.docs.map(d => d.data() as ChatUser);
+    return snap.docs
+        .filter(d => !d.id.startsWith('_schema') && d.data().uid)
+        .map(d => d.data() as ChatUser);
 }
 
 export async function setUserOnlineStatus(uid: string, online: boolean): Promise<void> {

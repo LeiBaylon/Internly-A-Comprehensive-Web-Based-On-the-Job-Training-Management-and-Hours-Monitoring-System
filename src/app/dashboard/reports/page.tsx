@@ -1,9 +1,9 @@
 'use client';
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '@/lib/context';
 import { getWeeksForLogs, getLogsForWeek } from '@/lib/calculations';
-import { saveWeeklyReport, getWeeklyReports } from '@/lib/storage';
 import { generatePDF } from '@/lib/pdf';
+import { WeeklyReport } from '@/lib/types';
 import { format, parseISO } from 'date-fns';
 import {
     FileText,
@@ -16,18 +16,22 @@ import {
 } from 'lucide-react';
 
 export default function ReportsPage() {
-    const { user, logs } = useApp();
+    const { user, logs, saveWeeklyReport: ctxSaveReport, getWeeklyReports: ctxGetReports } = useApp();
     const [selectedWeekIdx, setSelectedWeekIdx] = useState(0);
     const [reflection, setReflection] = useState('');
     const [showPreview, setShowPreview] = useState(true);
     const [generating, setGenerating] = useState(false);
     const [draftingAI, setDraftingAI] = useState(false);
+    const [savedReports, setSavedReports] = useState<WeeklyReport[]>([]);
 
     const weeks = useMemo(() => getWeeksForLogs(logs), [logs]);
-    const savedReports = useMemo(
-        () => (user ? getWeeklyReports(user.id) : []),
-        [user]
-    );
+
+    // Load saved reports from Firestore
+    useEffect(() => {
+        if (user) {
+            ctxGetReports(user.id).then(setSavedReports).catch(console.error);
+        }
+    }, [user, ctxGetReports]);
 
     if (!user) return null;
 
@@ -52,21 +56,31 @@ export default function ReportsPage() {
         }
     }, [selectedWeekIdx, currentSavedReport]);
 
-    const handleSaveReport = () => {
+    const handleSaveReport = async () => {
         if (!selectedWeek) return;
-        saveWeeklyReport({
+        const saved = await ctxSaveReport({
             userId: user.id,
             weekStart: selectedWeek.start.toISOString(),
             weekEnd: selectedWeek.end.toISOString(),
             reflection,
             logs: weekLogs,
         });
+        // Update local state with the saved report
+        setSavedReports(prev => {
+            const idx = prev.findIndex(r => r.weekStart === saved.weekStart);
+            if (idx >= 0) {
+                const updated = [...prev];
+                updated[idx] = saved;
+                return updated;
+            }
+            return [...prev, saved];
+        });
     };
 
     const handleExportPDF = async () => {
         if (!selectedWeek) return;
         setGenerating(true);
-        handleSaveReport();
+        await handleSaveReport();
         try {
             await generatePDF(weekLogs, selectedWeek.label, reflection, user.name);
         } catch (err) {

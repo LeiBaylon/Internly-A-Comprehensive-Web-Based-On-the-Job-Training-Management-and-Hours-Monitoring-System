@@ -259,3 +259,48 @@ export function saveWeeklyReport(report: Omit<WeeklyReport, 'id' | 'createdAt'>)
     setItem(KEYS.WEEKLY_REPORTS, reports);
     return newReport;
 }
+
+// ═══════════════════════════════════════════════════════
+// ─── Cache helpers (used by context for Firestore sync) ─
+// ═══════════════════════════════════════════════════════
+
+/** Cache a Firestore user into localStorage for fast local reads */
+export function cacheUser(user: User): void {
+    const users = getItem<User[]>(KEYS.USERS, []);
+    const idx = users.findIndex((u) => u.id === user.id || u.email === user.email);
+    if (idx >= 0) {
+        users[idx] = { ...users[idx], ...user };
+    } else {
+        users.push(user);
+    }
+    setItem(KEYS.USERS, users);
+    setItem(KEYS.CURRENT_USER, user);
+}
+
+/** Cache daily logs from Firestore into localStorage */
+export function cacheDailyLogs(userId: string, firestoreLogs: DailyLog[]): void {
+    const allLogs = getItem<DailyLog[]>(KEYS.DAILY_LOGS, []);
+    // Remove existing logs for this user, replace with Firestore data
+    const otherLogs = allLogs.filter((l) => l.userId !== userId);
+    setItem(KEYS.DAILY_LOGS, [...otherLogs, ...firestoreLogs]);
+}
+
+/** Replace a daily log ID (used when Firestore assigns a different ID than local) */
+export function replaceDailyLogId(oldId: string, newId: string): void {
+    const logs = getItem<DailyLog[]>(KEYS.DAILY_LOGS, []);
+    const idx = logs.findIndex((l) => l.id === oldId);
+    if (idx >= 0) {
+        logs[idx] = { ...logs[idx], id: newId };
+        setItem(KEYS.DAILY_LOGS, logs);
+    }
+}
+
+/** Set the remembered email */
+export function setRememberedEmail(email: string): void {
+    setItem(KEYS.REMEMBER_ME, email);
+}
+
+/** Clear the remembered email */
+export function clearRememberedEmail(): void {
+    if (typeof window !== 'undefined') localStorage.removeItem(KEYS.REMEMBER_ME);
+}
